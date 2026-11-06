@@ -158,10 +158,37 @@ under `out/` is generated and ignored.
   a controller's left stick, right stick x as twist, A B X Y, d-pad as hat. In the hangar the stick
   picks hotspots (the pointer disappears, the label shows) and the trigger goes there. Flight with
   a stick untested. `WC_JOYSTICK=1`: a virtual stick for WC_KEYS (`%x.y`, `j1`..`j4`).
-- Missing: the self-modifying code: the game makes 476080h-47D7AEh writable
-  with `VirtualProtect` (PAGE_EXECUTE_READWRITE): what it patches there isn't known yet (the DOS
-  version's texture mapper patched its own displacements; the recompiled code would ignore such
-  patches).
+- Self-modifying code: the game makes 476080h-47D7AEh writable with `VirtualProtect` and its
+  texture mappers patch their own displacements and immediates there with stores to constant
+  addresses (478092h: `MOV ES:[478511h],EAX`, ...), as the DOS version's did. The generator's
+  patched-constant handling covers them: 1560 instructions read such constants from memory
+  (`mrd32(0x478511, 4)`). A memory dump in flight shows 45 dwords changed there.
+
+## Playing it by script
+
+`WC_KEYS` in real time (ms after the start), mouse positions in 640x480, from a scratch game folder
+with the user's DOS saves (H1: right before a mission, needing its briefing):
+- intro: `3000:esc,6000:esc,9000:esc` (hangar at ~8 s); Flight Control: `@320.444` + click (a click is
+  `+lmb`, `-lmb` 150 ms later), the deck officer's scene Esc;
+- Flight Control: Main Terminal `@360.70`, callsign letters 200 ms apart + enter, Duty Logs
+  `@120.372`, slot H1 `@122.127`, Load `@130.421`, a click past "Insert CD", Return `@510.421`,
+  Logoff `@320.421`;
+- Flight Control's hotspots then: Attend BRIEFING `@30.200` (left edge), Run SIMULATOR
+  `@320.300`, Main Terminal `@470.260`, Fly MISSION `@612.240` (right edge; before the briefing it
+  goes to the hangar), Talk to RACHEL `@80.280`, Lift `@320.444` (bridge `@569.182`, living
+  `@592.240`, flight `@576.302` on its deck map);
+- briefing: Esc, Esc, then the wingman choice (a click on one: Hobbes where the pointer is), Esc
+  through the rest; Fly MISSION, Esc past the launch: the cockpit in the bay at ~86 s; A takes off.
+The whole way: `3000:esc,6000:esc,9000:esc,10000:@320.444,10500:+lmb,10650:-lmb,12500:esc,
+13500:@360.70,14000:+lmb,14150:-lmb,16000:n,16200:e,16400:m,16600:e,16800:s,17000:i,17200:s,
+17400:enter,18500:@120.372,19000:+lmb,19150:-lmb,21000:@122.127,21500:+lmb,21650:-lmb,
+23000:@130.421,23500:+lmb,23650:-lmb,26000:+lmb,26150:-lmb,30000:@510.421,30500:+lmb,30650:-lmb,
+32000:@320.421,32500:+lmb,32650:-lmb,34000:@30.200,34500:+lmb,34650:-lmb,40000:esc,46000:esc,
+52000:+lmb,52150:-lmb,56000:esc,62000:esc,68000:esc,72000:@612.240,72500:+lmb,72650:-lmb,
+78000:esc,88000:a` (in space at ~100 s; then `a` for the autopilot, `t`, `space`, `enter`).
+Hover labels show at the bottom (y 440-470); comparing that strip across screenshots of several
+hover positions (parallel runs) finds hotspots. 5 minutes of autopilot, guns and missiles ran
+without a stop (about 25 frames per second, 840 sound effects).
 
 ## Hooks (hooks.txt)
 
@@ -181,10 +208,9 @@ small files, link the `.TRE` files.
 
 ## Plan
 
-1. The self-modifying code at 476080h.
-2. Playing through: `npm run discover` for code still missing (exit 4), unimplemented functions
+1. Playing through: `npm run discover` for code still missing (exit 4), unimplemented functions
    (exit 6).
-3. The enhancement patch's features, ported (its controller presets and mapping utility too).
+2. The enhancement patch's features, ported (its controller presets and mapping utility too).
 ## Conventions
 
 As in wc3-recomp: TypeScript run directly by Node (≥ 23.6), ESM, `npm run typecheck`; Java Ghidra
