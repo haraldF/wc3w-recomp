@@ -9,18 +9,20 @@ generator (`ghidra_scripts/WcRecomp.java`) and the Ghidra driver (`src/ghidra.ts
 of its own, and the runtime will take its CPU core and SDL host. The two projects share nothing at
 build time: a change here never affects the DOS one.
 
-State: the game starts in a window, plays its intro movie with sound and reaches the hangar (with
-its music) with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
+State: the game starts in a window, plays its intro as the 30th Anniversary Edition's HD movies
+(1080p, decoded with FFmpeg; the original 320x240 ones with `WC_HD_MOVIES=0`) and reaches the
+hangar (with its music) with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
 missing.
 
 ## Building it yourself
 
 This repository contains no game files and nothing derived from them: you need the 30th
 Anniversary Edition from GOG. Its installer is for Windows, but `innoextract` unpacks it anywhere;
-only the `Kilrathi_Saga` folder is needed (the HD movie folders `Master_FMVs_*` not yet):
+only the `Kilrathi_Saga` folder is needed, with `Master_FMVs_Upscaled` for the HD movies (4.4 GB;
+`Master_FMVs_Source` is the other set, not needed):
 
 ```bash
-brew install node ghidra innoextract cmake ninja sdl3
+brew install node ghidra innoextract cmake ninja sdl3 ffmpeg
 innoextract --gog -d ../game3.30 path/to/setup_wing_commander_iii_heart_of_the_tigertm_30th_anniversary_edition_v1.0_\(95013\).exe
 npm ci
 ```

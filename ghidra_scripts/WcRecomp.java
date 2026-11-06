@@ -19,7 +19,9 @@
 // call. The runtime reports such addresses ("npm run discover").
 // Code pointers (hex, one per line: the targets of the image's base relocations that are in code)
 // outside every Ghidra function are decoded the same way.
-// Args: <output dir> <entries file> [<code pointers file>]
+// Hooks (hex, one per line, "#" comments): at these instructions the code first asks the runtime
+// (wc_hook) whether it handles them itself (e.g. a function it replaces), and returns if so.
+// Args: <output dir> <entries file> [<code pointers file> [<hooks file>]]
 //@category WC
 
 import java.nio.file.Files;
@@ -67,6 +69,7 @@ public class WcRecomp extends GhidraScript {
 	 * displacements); the instruction being translated */
 	private final Set<Long> patched = new HashSet<>();
 	private Instruction current;
+	private final Set<Long> hooks = new HashSet<>();
 
 	@Override
 	protected void run() throws Exception {
@@ -120,6 +123,14 @@ public class WcRecomp extends GhidraScript {
 			}
 		}
 		println("WcRecomp: " + pointers + " code pointers outside every function");
+		if (args.length > 3 && Files.exists(Path.of(args[3]))) {
+			for (String line : Files.readAllLines(Path.of(args[3]))) {
+				line = line.replaceAll("#.*", "").trim();
+				if (!line.isEmpty()) {
+					hooks.add(Long.parseLong(line, 16));
+				}
+			}
+		}
 		List<Fragment> fragments = fragments(seeds);
 		for (Fragment fr : fragments) {
 			entries.put(fr.entry, fname(fr.entry));
@@ -361,6 +372,9 @@ public class WcRecomp extends GhidraScript {
 		c.append("L_").append(Long.toHexString(at)).append(": TRACE_INS(0x").append(Long.toHexString(at))
 				.append("); /* ").append(ins.getAddress()).append(" ").append(ins.toString().replace("*/", "* /"))
 				.append(" */\n");
+		if (hooks.contains(at)) {
+			c.append("\tif (wc_hook(0x").append(Long.toHexString(at)).append(")) return;\n");
+		}
 
 		// Ghidra's LSL keeps only the limit's low word, even into a 32-bit register (the C library's
 		// heap takes its size from DS's limit): the whole limit, and ZF for a valid selector.

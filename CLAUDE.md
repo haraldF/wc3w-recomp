@@ -129,10 +129,36 @@ under `out/` is generated and ignored.
   others. waveOut (XanLib): queued headers on a voice; the played ones are reported on the
   program's thread (`win_poll`, Sleep): a callback function between two instructions, all
   registers kept. Not used by the game so far.
+- HD movies (`movie.cpp`): the enhancement patch's Mod_Movies/libvlc_Movies (clone
+  `github.com/mattwells77/Wing_Commander_III_Enhancement_Patch`: its `wc3w.cpp` names the game's
+  addresses) done with a hook and FFmpeg. The game's movie function 41C240h (cdecl, the path first:
+  `..\..\data\movies\opening.MVE`) is replaced: the scene is the file name in lower case, its
+  branches (the list at 4AAA50h from the index at 4A24D4h, -1 at the end) are letters, `movies.ini`
+  in the movie folder renames scenes and branches or skips them ("-1"), the file is
+  `Master_FMVs_Upscaled/<name><letter>.mp4` (1920x1080 H.264, 29.97 fps, AAC 48 kHz). After the
+  branches the game's 40FD20h (`wc3_handle_movie(0)`) does the conversation choice and fills the
+  list again, until it starts with -1. The game's movie message handler (41C700h) is added to its
+  message nodes (483090h/4830D0h) and its message loop (482920h) pumped while playing. Esc ends a
+  movie (the game's handler doesn't: only its halt flag 4A24C4h is checked too); the next starts
+  once Esc is up. No first file: the original player plays it. A decoder thread per branch (RGB
+  frames, the sound resampled to the mixer as a `pcm_stream`); the frame shown is the newest due by
+  the sound's clock. The host draws it fitted to the window with the game's own picture over it
+  (colour 0 transparent: the choice text). `WC_HD_MOVIES=0`: the original movies;
+  `WC_HD_MOVIES=Master_FMVs_Source`: the other set. Not done yet: the in-flight comms (460 files in
+  `Master_FMVs_Upscaled/inflight`, the patch's other hooks at 422EA5h, 423085h, 433731h), subtitles,
+  the patch's colours for the choice text (palette entries 252/253 and its code patches at
+  414940h-414983h): conversations are untested.
 - Missing: the joystick (none reported), the self-modifying code: the game makes 476080h-47D7AEh writable
   with `VirtualProtect` (PAGE_EXECUTE_READWRITE): what it patches there isn't known yet (the DOS
   version's texture mapper patched its own displacements; the recompiled code would ignore such
   patches).
+
+## Hooks (hooks.txt)
+
+Addresses where the generated code first calls `wc_hook(addr)` (the generator's fourth argument);
+a handler registered with `hook_register` may do the work itself (a whole function: set EAX, pop
+the return address) and return true, and the generated function returns; false runs the original
+code. This is how the enhancement patch's code replacements are ported.
 
 ## Debugging
 

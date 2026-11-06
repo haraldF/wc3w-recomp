@@ -20,10 +20,19 @@ struct voice {
 	std::deque<uint32_t> queue, done;
 };
 
-/* Held while touching voices (the host's audio thread mixes them). */
+/* Sound from the runtime itself (the HD movies): 16-bit stereo at MIX_RATE, consumed as mixed */
+struct pcm_stream {
+	std::deque<int16_t> samples; /* interleaved left, right */
+	uint64_t consumed = 0;        /* frames mixed so far */
+	bool paused = false;
+};
+
+/* Held while touching voices and streams (the host's audio thread mixes them). */
 extern std::mutex sound_lock;
 void sound_add(voice *v);
 void sound_remove(voice *v);
+void sound_stream_add(pcm_stream *s);
+void sound_stream_remove(pcm_stream *s);
 /* Called by the host on its audio thread: mixes frames of stereo into out. */
 void sound_mix(int16_t *out, unsigned frames);
 /* On the program's thread: waveOut's finished headers to the program (winmm.cpp). */

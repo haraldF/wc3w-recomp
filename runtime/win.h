@@ -80,6 +80,11 @@ bool thread_close(uint32_t handle); /* whether it is a thread's handle */
 void thread_yield(void);     /* let another thread run, if one can */
 void thread_sleep(uint32_t ms);
 
+/* Hooks (hooks.txt, wc_hook): a native handler for an instruction address. It returns true when it
+ * did the instruction's work itself, e.g. a whole function: then it has set EAX and popped the
+ * return address (and, for stdcall, the arguments), and the generated code returns. */
+void hook_register(uint32_t at, bool (*fn)(void));
+
 /* FS's base for a selector (seg_load) */
 uint32_t win_fs_base(uint16_t selector);
 /* Every 65536 instructions, on the program's thread. */

@@ -1,0 +1,2 @@
+# Addresses where the runtime may take over (runtime/hooks: wc_hook), before the original code runs.
+41c240	# the movie player (play_movie): HD movies instead (movie.cpp)

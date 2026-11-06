@@ -133,6 +133,12 @@ void drain_input(void)
 
 } // namespace
 
+/* Whether a key (virtual key) is down, as far as the program's messages have got */
+bool user_key_down(uint32_t vk)
+{
+	return vk_down[vk & 0xff];
+}
+
 void win_input(uint32_t message, uint32_t wparam, uint32_t lparam)
 {
 	std::lock_guard<std::mutex> g(input_lock);

@@ -60,6 +60,8 @@ const labelsFile = path.join(out, "labels.txt");
 // decodes those outside Ghidra's functions too: code reached only through pointers (callbacks,
 // tables of functions), which the DOS version had to find by running it.
 const codePointersFile = path.join(out, "code-pointers.txt");
+// Addresses where the runtime may take over (functions it replaces: runtime/hooks.cpp), kept in the repository
+const hooksFile = path.join(root, "hooks.txt");
 const projectDir = path.join(out, "ghidra");
 const scriptPath = path.join(root, "ghidra_scripts");
 const projectName = "WC3W";
@@ -198,7 +200,7 @@ const doRecomp = async (): Promise<void> => {
     projectDir, projectName,
     "-process", path.basename(imageFile), "-noanalysis", "-readOnly",
     "-scriptPath", scriptPath,
-    "-postScript", "WcRecomp.java", recompDir, entriesFile, codePointersFile,
+    "-postScript", "WcRecomp.java", recompDir, entriesFile, codePointersFile, hooksFile,
   ]);
   await doBuild();
 };

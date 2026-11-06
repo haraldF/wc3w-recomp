@@ -54,6 +54,25 @@ bool dll_known(const std::string &dll)
 	return false;
 }
 
+/* ---- hooks ---- */
+
+static std::map<uint32_t, bool (*)(void)> &hooks()
+{
+	static std::map<uint32_t, bool (*)(void)> h;
+	return h;
+}
+
+void hook_register(uint32_t at, bool (*fn)(void))
+{
+	hooks()[at] = fn;
+}
+
+bool wc_hook(uint32_t at)
+{
+	auto it = hooks().find(at);
+	return it != hooks().end() && it->second();
+}
+
 /* ---- thunks ---- */
 
 struct thunk {

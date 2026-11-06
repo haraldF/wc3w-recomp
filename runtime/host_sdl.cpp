@@ -28,11 +28,17 @@ void win_mouse(int dx, int dy, int buttons);                       /* user32.cpp
 void win_mouse_at(int x, int y);                                   /* user32.cpp */
 void wc_dump_memory(const char *why);                              /* cpu.cpp: WC_DUMP */
 void sound_mix(int16_t *out, unsigned frames);                     /* sound.cpp */
+bool movie_frame(std::vector<uint32_t> *pixels, int *w, int *h, uint64_t *count); /* movie.cpp */
 static const unsigned MIX_RATE = 44100;
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;
 static SDL_Texture *picture;
+static SDL_Texture *overlay;  /* the picture over an HD movie: colour 0 transparent */
+static SDL_Texture *movie;    /* the HD movie's frame */
+static std::vector<uint32_t> movie_pixels;
+static int movie_w, movie_h;
+static uint64_t movie_count;
 static void (*game_fn)(void);
 
 const char *host_base_dir(void)
@@ -190,33 +196,66 @@ static void play_script(int now_ms, int *buttons)
 static uint8_t pixels[640 * 480], palette[256 * 3];
 static int frame_w = 640, frame_h = 480;
 
+/* the 8-bit picture into a texture; transparent: colour 0 shows what's under it */
+static void upload(SDL_Texture *t, bool transparent)
+{
+	uint32_t *dst;
+	int pitch;
+	if (!SDL_LockTexture(t, NULL, (void **)&dst, &pitch)) return;
+	for (int y = 0; y < frame_h; y++) {
+		uint32_t *row = (uint32_t *)((uint8_t *)dst + y * pitch);
+		for (int x = 0; x < frame_w; x++) {
+			uint8_t p = pixels[y * frame_w + x];
+			uint32_t a = transparent && !p ? 0 : 0xff000000u;
+			row[x] = a | (uint32_t)palette[3 * p] << 16 | (uint32_t)palette[3 * p + 1] << 8 | palette[3 * p + 2];
+		}
+	}
+	SDL_UnlockTexture(t);
+}
+
+/* w x h fitted into the window, centred */
+static SDL_FRect fit(int w, int h)
+{
+	int ww, wh;
+	SDL_GetRenderOutputSize(renderer, &ww, &wh);
+	float scale = SDL_min((float)ww / w, (float)wh / h);
+	return { (ww - w * scale) / 2, (wh - h * scale) / 2, w * scale, h * scale };
+}
+
 static void show_frame(void)
 {
 	static uint64_t shown = ~0ull;
 	uint64_t n = ddraw_frame(pixels, palette, &frame_w, &frame_h);
-	if (n != shown) {
-		shown = n;
-		uint32_t *dst;
-		int pitch;
-		if (SDL_LockTexture(picture, NULL, (void **)&dst, &pitch)) {
-			for (int y = 0; y < frame_h; y++) {
-				uint32_t *row = (uint32_t *)((uint8_t *)dst + y * pitch);
-				for (int x = 0; x < frame_w; x++) {
-					uint8_t p = pixels[y * frame_w + x];
-					row[x] = 0xff000000u | (uint32_t)palette[3 * p] << 16 | (uint32_t)palette[3 * p + 1] << 8 | palette[3 * p + 2];
-				}
-			}
-			SDL_UnlockTexture(picture);
+	uint64_t before = movie_count;
+	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count);
+	if (hd && movie_count != before && !movie_pixels.empty()) {
+		float tw = 0, th = 0;
+		if (movie) SDL_GetTextureSize(movie, &tw, &th);
+		if (!movie || (int)tw != movie_w || (int)th != movie_h) {
+			if (movie) SDL_DestroyTexture(movie);
+			movie = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, movie_w, movie_h);
+			SDL_SetTextureScaleMode(movie, SDL_SCALEMODE_LINEAR);
 		}
+		SDL_UpdateTexture(movie, NULL, movie_pixels.data(), 4 * movie_w);
 	}
-	int ww, wh;
-	SDL_GetRenderOutputSize(renderer, &ww, &wh);
-	float scale = SDL_min(ww / 640.0f, wh / 480.0f);
-	SDL_FRect r = { (ww - 640 * scale) / 2, (wh - 480 * scale) / 2, 640 * scale, 480 * scale };
+	if (n != shown || hd) {
+		shown = n;
+		upload(hd ? overlay : picture, hd);
+	}
 	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
 	SDL_RenderClear(renderer);
 	SDL_FRect src = { 0, 0, (float)frame_w, (float)frame_h };
-	SDL_RenderTexture(renderer, picture, &src, &r);
+	SDL_FRect r = fit(640, 480);
+	if (hd) {
+		if (movie && !movie_pixels.empty()) {
+			SDL_FRect m = fit(movie_w, movie_h);
+			SDL_RenderTexture(renderer, movie, NULL, &m);
+		}
+		SDL_RenderTexture(renderer, overlay, &src, &r);
+	}
+	else {
+		SDL_RenderTexture(renderer, picture, &src, &r);
+	}
 	SDL_RenderPresent(renderer);
 }
 
@@ -247,23 +286,33 @@ static void chunk(FILE *f, const char *type, const std::vector<uint8_t> &data)
 	fwrite(c.data(), 1, c.size(), f);
 }
 
+/* The picture, or during an HD movie its frame (RGB) */
 static void screenshot(const char *path)
 {
 	ddraw_frame(pixels, palette, &frame_w, &frame_h);
+	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count) && !movie_pixels.empty();
 	FILE *f = fopen(path, "wb");
 	if (!f) return;
 	fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
+	int w = hd ? movie_w : frame_w, hh = hd ? movie_h : frame_h;
 	std::vector<uint8_t> h;
-	put32(h, (uint32_t)frame_w);
-	put32(h, (uint32_t)frame_h);
-	h.insert(h.end(), { 8, 3, 0, 0, 0 }); /* 8 bits, indexed */
+	put32(h, (uint32_t)w);
+	put32(h, (uint32_t)hh);
+	h.insert(h.end(), { 8, (uint8_t)(hd ? 2 : 3), 0, 0, 0 }); /* 8 bits, RGB or indexed */
 	chunk(f, "IHDR", h);
-	chunk(f, "PLTE", std::vector<uint8_t>(palette, palette + 768));
+	if (!hd) chunk(f, "PLTE", std::vector<uint8_t>(palette, palette + 768));
 	/* zlib with stored blocks, a filter byte (0) before each row */
 	std::vector<uint8_t> raw;
-	for (int y = 0; y < frame_h; y++) {
+	for (int y = 0; y < hh; y++) {
 		raw.push_back(0);
-		raw.insert(raw.end(), pixels + y * frame_w, pixels + (y + 1) * frame_w);
+		if (!hd) {
+			raw.insert(raw.end(), pixels + y * frame_w, pixels + (y + 1) * frame_w);
+			continue;
+		}
+		for (int x = 0; x < w; x++) {
+			uint32_t p = movie_pixels[(size_t)y * w + x];
+			raw.insert(raw.end(), { (uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p });
+		}
 	}
 	std::vector<uint8_t> z = { 0x78, 0x01 };
 	uint32_t a = 1, b = 0;
@@ -414,6 +463,9 @@ static bool open_window(void)
 	SDL_SetRenderVSync(renderer, 1);
 	picture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480);
 	SDL_SetTextureScaleMode(picture, SDL_SCALEMODE_LINEAR);
+	overlay = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480);
+	SDL_SetTextureScaleMode(overlay, SDL_SCALEMODE_LINEAR);
+	SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
 	SDL_SetWindowRelativeMouseMode(window, true);
 	return true;
 }

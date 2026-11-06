@@ -519,6 +519,15 @@ API(DDRAW, DirectDrawCreate, 3)
 	return DD_OK;
 }
 
+void ddraw_clear(void)
+{
+	for (uint32_t o : { primary, surfaces.count(primary) ? surfaces[primary].back : 0u }) {
+		auto it = surfaces.find(o);
+		if (it != surfaces.end()) memset(M + it->second.bits, 0, it->second.pitch * it->second.h);
+	}
+	present();
+}
+
 uint64_t ddraw_frame(uint8_t *pixels, uint8_t palette[256 * 3], int *w, int *h)
 {
 	std::lock_guard<std::mutex> g(frame_lock);

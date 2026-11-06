@@ -8,6 +8,19 @@
 
 std::mutex sound_lock;
 static std::vector<voice *> voices;
+static std::vector<pcm_stream *> streams;
+
+void sound_stream_add(pcm_stream *s)
+{
+	std::lock_guard<std::mutex> g(sound_lock);
+	streams.push_back(s);
+}
+
+void sound_stream_remove(pcm_stream *s)
+{
+	std::lock_guard<std::mutex> g(sound_lock);
+	streams.erase(std::remove(streams.begin(), streams.end(), s), streams.end());
+}
 
 void sound_add(voice *v)
 {
@@ -86,6 +99,13 @@ void sound_mix(int16_t *out, unsigned frames)
 	{
 		std::lock_guard<std::mutex> g(sound_lock);
 		for (voice *v : voices) mix_voice(*v, acc.data(), frames);
+		for (pcm_stream *s : streams) {
+			if (s->paused) continue;
+			unsigned n = (unsigned)std::min<size_t>(frames, s->samples.size() / 2);
+			for (unsigned k = 0; k < 2 * n; k++) acc[k] += s->samples[k];
+			s->samples.erase(s->samples.begin(), s->samples.begin() + 2 * n);
+			s->consumed += n;
+		}
 	}
 	for (size_t i = 0; i < acc.size(); i++) out[i] = (int16_t)std::clamp(acc[i], -32768.0f, 32767.0f);
 }

@@ -178,6 +178,10 @@ uint64_t port_in(uint64_t port, int size);
 void port_out(uint64_t port, uint64_t value, int size);
 void trace_ins(uint32_t at);
 
+/* A hook (hooks.txt): whether the runtime handled the instruction at that address itself, in which
+ * case the generated function returns (the handler did the RET). */
+bool wc_hook(uint32_t at);
+
 /* Shadow return stack: each translated call records where it expects to continue, so that a
  * jump to that address (a hand-made return) can return from the C function instead. */
 extern uint32_t wc_ret_stack[];
