@@ -21,6 +21,9 @@ enum : uint32_t {
 struct buffer {
 	voice v;
 	bool primary = false;
+	buffer *original = nullptr; /* a duplicate's: the buffer whose memory it plays */
+	int duplicates = 0;         /* an original's: duplicates still there */
+	bool released = false;      /* an original released while duplicates play its memory */
 	uint32_t flags = 0;
 	unsigned base_rate = 22050;
 	int32_t volume = 0, pan = 0; /* hundredths of a dB */
@@ -70,6 +73,14 @@ uint32_t AddRef() { return 1; }
 uint32_t DS_Release() { return 0; }
 uint32_t DS_SetCooperativeLevel() { return DS_OK; }
 uint32_t DS_Compact() { return DS_OK; }
+uint32_t DS_Initialize() { return DS_OK; }
+uint32_t DS_SetSpeakerConfig() { return DS_OK; }
+
+uint32_t DS_GetSpeakerConfig()
+{
+	wr32(arg(1), 4); /* DSSPEAKER_STEREO */
+	return DS_OK;
+}
 
 uint32_t DS_GetCaps()
 {
@@ -124,16 +135,58 @@ uint32_t B_QueryInterface()
 	return E_NOINTERFACE;
 }
 
+/* The memory goes when the last buffer playing it does (an original and its duplicates) */
+void drop(buffer *b)
+{
+	if (b->original) {
+		buffer *o = b->original;
+		delete b;
+		if (--o->duplicates == 0 && o->released) drop(o);
+		return;
+	}
+	if (b->duplicates) {
+		b->released = true;
+		return;
+	}
+	if (b->v.data) heap_free(b->v.data);
+	delete b;
+}
+
 uint32_t B_Release()
 {
 	auto it = buffers.find(arg(0));
 	if (it != buffers.end()) {
 		sound_remove(&it->second->v);
-		if (it->second->v.data) heap_free(it->second->v.data);
-		delete it->second;
+		buffer *b = it->second;
 		buffers.erase(it);
+		drop(b);
 	}
 	return 0;
+}
+
+/* A buffer playing the same memory, with a position, volume, pan and frequency of its own */
+uint32_t DS_DuplicateSoundBuffer()
+{
+	buffer *src = get(arg(1));
+	if (!src || src->primary) return DSERR_INVALIDPARAM;
+	buffer *o = src->original ? src->original : src;
+	buffer *b = new buffer;
+	b->v.data = o->v.data;
+	b->v.size = o->v.size;
+	b->v.channels = o->v.channels;
+	b->v.bits = o->v.bits;
+	b->v.rate = b->base_rate = o->base_rate;
+	b->flags = src->flags;
+	b->volume = src->volume;
+	b->pan = src->pan;
+	set_gains(b);
+	b->original = o;
+	o->duplicates++;
+	sound_add(&b->v);
+	uint32_t obj = make_object(vt_buffer);
+	buffers[obj] = b;
+	wr32(arg(2), obj);
+	return DS_OK;
 }
 
 uint32_t B_GetCaps()
@@ -304,10 +357,10 @@ void init(void)
 	vt_dsound = make_vtable({
 		{ "IDirectSound::QueryInterface", 3, B_QueryInterface }, { "IDirectSound::AddRef", 1, AddRef },
 		{ "IDirectSound::Release", 1, DS_Release }, { "IDirectSound::CreateSoundBuffer", 4, DS_CreateSoundBuffer },
-		{ "IDirectSound::GetCaps", 2, DS_GetCaps }, { "IDirectSound::DuplicateSoundBuffer", 3, nullptr },
+		{ "IDirectSound::GetCaps", 2, DS_GetCaps }, { "IDirectSound::DuplicateSoundBuffer", 3, DS_DuplicateSoundBuffer },
 		{ "IDirectSound::SetCooperativeLevel", 3, DS_SetCooperativeLevel }, { "IDirectSound::Compact", 1, DS_Compact },
-		{ "IDirectSound::GetSpeakerConfig", 2, nullptr }, { "IDirectSound::SetSpeakerConfig", 2, nullptr },
-		{ "IDirectSound::Initialize", 2, nullptr },
+		{ "IDirectSound::GetSpeakerConfig", 2, DS_GetSpeakerConfig },
+		{ "IDirectSound::SetSpeakerConfig", 2, DS_SetSpeakerConfig }, { "IDirectSound::Initialize", 2, DS_Initialize },
 	});
 	vt_buffer = make_vtable({
 		{ "IDirectSoundBuffer::QueryInterface", 3, B_QueryInterface }, { "IDirectSoundBuffer::AddRef", 1, AddRef },
@@ -315,7 +368,7 @@ void init(void)
 		{ "IDirectSoundBuffer::GetCurrentPosition", 3, B_GetCurrentPosition }, { "IDirectSoundBuffer::GetFormat", 4, B_GetFormat },
 		{ "IDirectSoundBuffer::GetVolume", 2, B_GetVolume }, { "IDirectSoundBuffer::GetPan", 2, B_GetPan },
 		{ "IDirectSoundBuffer::GetFrequency", 2, B_GetFrequency }, { "IDirectSoundBuffer::GetStatus", 2, B_GetStatus },
-		{ "IDirectSoundBuffer::Initialize", 3, nullptr }, { "IDirectSoundBuffer::Lock", 8, B_Lock },
+		{ "IDirectSoundBuffer::Initialize", 3, DS_Initialize }, { "IDirectSoundBuffer::Lock", 8, B_Lock },
 		{ "IDirectSoundBuffer::Play", 4, B_Play }, { "IDirectSoundBuffer::SetCurrentPosition", 2, B_SetCurrentPosition },
 		{ "IDirectSoundBuffer::SetFormat", 2, B_SetFormat }, { "IDirectSoundBuffer::SetVolume", 2, B_SetVolume },
 		{ "IDirectSoundBuffer::SetPan", 2, B_SetPan }, { "IDirectSoundBuffer::SetFrequency", 2, B_SetFrequency },
