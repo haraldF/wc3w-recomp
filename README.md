@@ -9,8 +9,9 @@ generator (`ghidra_scripts/WcRecomp.java`) and the Ghidra driver (`src/ghidra.ts
 of its own, and the runtime will take its CPU core and SDL host. The two projects share nothing at
 build time: a change here never affects the DOS one.
 
-State: the modules load, their imports are listed and Ghidra analyzes them; next are the
-generator's Windows mode and a runtime with the Windows API the game uses (see `CLAUDE.md`).
+State: the game starts in a window, plays its intro movie (silently: no sound yet) and reaches the
+hangar with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
+missing.
 
 ## Building it yourself
 
@@ -19,7 +20,7 @@ Anniversary Edition from GOG. Its installer is for Windows, but `innoextract` un
 only the `Kilrathi_Saga` folder is needed (the HD movie folders `Master_FMVs_*` not yet):
 
 ```bash
-brew install node ghidra innoextract
+brew install node ghidra innoextract cmake ninja sdl3
 innoextract --gog -d ../game3.30 path/to/setup_wing_commander_iii_heart_of_the_tigertm_30th_anniversary_edition_v1.0_\(95013\).exe
 npm ci
 ```
@@ -31,9 +32,18 @@ Everything is worked out on its `WC3W.EXE` (SHA-256
 With the game at `../game3.30/Kilrathi_Saga` (or `-- --game path` for every step):
 
 ```bash
-npm run imports      # map the modules (out/wc3w, out/xanlib) and list the Windows functions they import
-npm run decompile    # import both into a Ghidra project (out/ghidra) and analyze them (long)
+npm run imports      # map the modules, link them into one image and list the Windows functions they import
+npm run decompile    # import the image into a Ghidra project (out/ghidra) and analyze it (minutes)
+npm run recomp       # translate it to C++ (out/recomp) and build out/bin/wc3w
 ```
+
+Then play, with a copy of the game folder (the game writes its saves into it):
+
+```bash
+out/bin/wc3w path/to/Kilrathi_Saga
+```
+
+Cmd+F toggles full screen, Cmd+Q quits. The mouse is captured while the window has it.
 
 ## License
 

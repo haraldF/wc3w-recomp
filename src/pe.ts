@@ -46,6 +46,8 @@ export interface PE {
   relocations: number[];
   /** the export directory's DLL name */
   exportName?: string;
+  /** the resource directory (RVA, size), for FindResource and its kin */
+  resources: { rva: number; size: number };
 }
 
 const IMAGE_FILE_DLL = 0x2000;
@@ -149,7 +151,7 @@ export function parsePE(file: Buffer): PE {
     isDll: (characteristics & IMAGE_FILE_DLL) !== 0, subsystem: file.readUInt16LE(opt + 68),
     stackReserve: file.readUInt32LE(opt + 72), stackCommit: file.readUInt32LE(opt + 76),
     heapReserve: file.readUInt32LE(opt + 80), heapCommit: file.readUInt32LE(opt + 84),
-    sections, imports, exports, relocations, exportName,
+    sections, imports, exports, relocations, exportName, resources: dir(2),
   };
 }
 

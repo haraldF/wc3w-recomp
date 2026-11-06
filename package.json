@@ -9,6 +9,10 @@
     "unpack": "node src/cli.ts unpack",
     "imports": "node src/cli.ts imports",
     "decompile": "node src/cli.ts decompile",
+    "recomp": "node src/cli.ts recomp",
+    "build": "node src/cli.ts build",
+    "discover": "node src/cli.ts discover",
+    "play": "node src/cli.ts play",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
