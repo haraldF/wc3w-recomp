@@ -320,8 +320,11 @@ uint32_t win_fs_base(uint16_t selector)
 	return selector == FS_SELECTOR ? thread_tib() : 0;
 }
 
+void wave_out_poll(void); /* winmm.cpp */
+
 void win_poll(void)
 {
+	wave_out_poll();
 	thread_yield();
 }
 

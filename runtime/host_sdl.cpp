@@ -6,6 +6,7 @@
  * WC_KEYS=ms:key,...: keys and clicks at those times (ms after the start): "esc", "enter", "space",
  * "tab", "up", "f1", a letter or digit (pressed for 50 ms; "+key" only presses, "-key" only
  * releases), "lmb"/"rmb" (a click), "@x.y" (the mouse to x, y of 640x480).
+ * WC_WAV=file: record the sound (also headless).
  * WC_HEADLESS=1: no window. WC_SCREENSHOT=file.png: the picture after WC_SCREENSHOT_AT seconds
  * (default 10), then the program ends (also headless); with WC_DUMP=file the memory too. */
 #include <algorithm>
@@ -26,6 +27,8 @@ void win_input(uint32_t message, uint32_t wparam, uint32_t lparam); /* user32.cp
 void win_mouse(int dx, int dy, int buttons);                       /* user32.cpp */
 void win_mouse_at(int x, int y);                                   /* user32.cpp */
 void wc_dump_memory(const char *why);                              /* cpu.cpp: WC_DUMP */
+void sound_mix(int16_t *out, unsigned frames);                     /* sound.cpp */
+static const unsigned MIX_RATE = 44100;
 
 static SDL_Window *window;
 static SDL_Renderer *renderer;
@@ -279,6 +282,79 @@ static void screenshot(const char *path)
 	fprintf(stderr, "wc: screenshot saved to %s\n", path);
 }
 
+/* ---- sound: the mixer's output to SDL's audio stream (headless: consumed in real time), and
+ * to WC_WAV ---- */
+
+static FILE *wav;
+static uint32_t wav_bytes;
+
+static void wav_header(void)
+{
+	auto le = [](uint8_t *p, uint32_t v, int n) { for (int i = 0; i < n; i++) p[i] = (uint8_t)(v >> 8 * i); };
+	uint8_t h[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 2, 0 };
+	le(h + 4, 36 + wav_bytes, 4);
+	le(h + 24, MIX_RATE, 4);
+	le(h + 28, MIX_RATE * 4, 4);
+	le(h + 32, 4, 2);
+	le(h + 34, 16, 2);
+	memcpy(h + 36, "data", 4);
+	le(h + 40, wav_bytes, 4);
+	fseek(wav, 0, SEEK_SET);
+	fwrite(h, 1, 44, wav);
+	fseek(wav, 0, SEEK_END);
+}
+
+static void produce(int16_t *buf, unsigned frames)
+{
+	sound_mix(buf, frames);
+	if (wav) {
+		fwrite(buf, 4, frames, wav);
+		wav_bytes += 4 * frames;
+	}
+}
+
+static void SDLCALL audio_callback(void *, SDL_AudioStream *stream, int additional, int)
+{
+	static std::vector<int16_t> buf;
+	unsigned frames = (unsigned)additional / 4;
+	if (!frames) return;
+	buf.resize(2 * (size_t)frames);
+	produce(buf.data(), frames);
+	SDL_PutAudioStreamData(stream, buf.data(), (int)(4 * frames));
+}
+
+static bool open_audio(void)
+{
+	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) return false;
+	SDL_AudioSpec spec = { SDL_AUDIO_S16, 2, (int)MIX_RATE };
+	SDL_AudioStream *s = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, audio_callback, nullptr);
+	if (!s) {
+		fprintf(stderr, "wc: no sound (%s)\n", SDL_GetError());
+		return false;
+	}
+	SDL_ResumeAudioStreamDevice(s);
+	return true;
+}
+
+/* Without an audio device: the sound is consumed in real time all the same */
+static void quiet_audio(void)
+{
+	std::thread([] {
+		auto t = std::chrono::steady_clock::now();
+		uint64_t done = 0;
+		std::vector<int16_t> buf;
+		for (;;) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			uint64_t due = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t).count() *
+				MIX_RATE / 1000000;
+			unsigned frames = (unsigned)(due - done);
+			buf.resize(2 * (size_t)frames);
+			produce(buf.data(), frames);
+			done = due;
+		}
+	}).detach();
+}
+
 /* ---- threads ---- */
 
 static int game_thread(void *)
@@ -348,6 +424,11 @@ static bool open_window(void)
 	init_keys();
 	read_script();
 	bool shown = open_window();
+	if (const char *w = getenv("WC_WAV")) {
+		wav = fopen(w, "wb");
+		if (wav) wav_header();
+	}
+	if (!shown || !open_audio()) quiet_audio();
 	start_thread(game_thread, nullptr, "game");
 	auto started = std::chrono::steady_clock::now();
 	const char *shot = getenv("WC_SCREENSHOT");
@@ -401,6 +482,10 @@ static bool open_window(void)
 
 [[noreturn]] void host_exit(int code)
 {
+	if (wav) {
+		wav_header();
+		fclose(wav);
+	}
 	fflush(stdout);
 	fflush(stderr);
 	std::_Exit(code);

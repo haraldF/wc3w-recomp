@@ -661,6 +661,7 @@ API(KERNEL32, Sleep, 1)
 {
 	uint32_t ms = arg(0);
 	thread_sleep(ms);
+	win_poll();
 	return 0;
 }
 

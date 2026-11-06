@@ -9,8 +9,8 @@ generator (`ghidra_scripts/WcRecomp.java`) and the Ghidra driver (`src/ghidra.ts
 of its own, and the runtime will take its CPU core and SDL host. The two projects share nothing at
 build time: a change here never affects the DOS one.
 
-State: the game starts in a window, plays its intro movie (silently: no sound yet) and reaches the
-hangar with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
+State: the game starts in a window, plays its intro movie with sound and reaches the hangar (with
+its music) with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
 missing.
 
 ## Building it yourself

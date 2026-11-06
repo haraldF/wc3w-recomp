@@ -119,8 +119,17 @@ under `out/` is generated and ignored.
   host at Flip, Unlock and Blt. The game: "Card is not bank switched. Using double buffer mode.";
   DDCAPS of 316 bytes; a 320x240 off-screen surface for movies. Movies are interlaced (every other
   line black) as the 1996 version shows them.
-- Missing: sound (DirectSound: the game asks for it and plays silently without; XanLib's waveOut),
-  the joystick (none reported), the self-modifying code: the game makes 476080h-47D7AEh writable
+- Sound (`sound.cpp`, `dsound.cpp`, `winmm.cpp`): a mixer of voices playing 8- or 16-bit PCM
+  straight from the program's memory, into 16-bit stereo at 44.1 kHz; SDL's audio stream pulls it
+  (headless a thread consumes it in real time; `WC_WAV=file` records it). DirectSound (the game
+  loads `dsound.dll` itself and plays silently without it): secondary buffers are voices, the play
+  cursor is where the mixer is, the write cursor 10 ms ahead; Lock hands out the buffer's own
+  memory. The game streams movies and music (`CD1MUSIC.TRE`) into 8 KB looping 16-bit mono 22 kHz
+  buffers, polling GetCurrentPosition in a loop (a million times in 20 s), and plays effects from
+  others. waveOut (XanLib): queued headers on a voice; the played ones are reported on the
+  program's thread (`win_poll`, Sleep): a callback function between two instructions, all
+  registers kept. Not used by the game so far.
+- Missing: the joystick (none reported), the self-modifying code: the game makes 476080h-47D7AEh writable
   with `VirtualProtect` (PAGE_EXECUTE_READWRITE): what it patches there isn't known yet (the DOS
   version's texture mapper patched its own displacements; the recompiled code would ignore such
   patches).
@@ -129,19 +138,18 @@ under `out/` is generated and ignored.
 
 `WC_TRACE=1` (Windows calls, their arguments and results), `WC_TRACE=2` (every instruction) with
 `WC_TRACE_AT=addr,lo-hi,...` (only those, with ST0-ST2 and the x87 control word), `WC_WATCH=addr`,
-`WC_HEADLESS=1`, `WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (with `WC_DUMP=file`
+`WC_HEADLESS=1`, `WC_WAV=file.wav`, `WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (with `WC_DUMP=file`
 the memory too), `WC_KEYS=ms:key,...` (real time: e.g. `3000:esc,6000:esc,9000:esc` skips the intro
 to the hangar). Test in a scratch copy of the game folder (the game writes saves there): copy the
 small files, link the `.TRE` files.
 
 ## Plan
 
-1. Sound: DirectSound and waveOut on SDL's audio.
-2. The self-modifying code at 476080h.
-3. Playing through: `npm run discover` for code still missing (exit 4), unimplemented functions
+1. The self-modifying code at 476080h.
+2. Playing through: `npm run discover` for code still missing (exit 4), unimplemented functions
    (exit 6).
-4. The joystick through SDL's gamepads (`joyGetPosEx`).
-5. The enhancement patch's features, ported.
+3. The joystick through SDL's gamepads (`joyGetPosEx`).
+4. The enhancement patch's features, ported.
 ## Conventions
 
 As in wc3-recomp: TypeScript run directly by Node (≥ 23.6), ESM, `npm run typecheck`; Java Ghidra
