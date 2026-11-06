@@ -433,10 +433,23 @@ API(USER32, ShowCursor, 1)
 	return (uint32_t)cursor_count;
 }
 
+/* The pointer to x, y (the game's 640x480): Windows reports that with a WM_MOUSEMOVE, from which
+ * the game takes the position (it never reads it otherwise). Moves still queued are from before:
+ * dropped. */
+void user_set_pointer(int x, int y)
+{
+	mouse_x = std::clamp(x, 0, 639);
+	mouse_y = std::clamp(y, 0, 479);
+	std::erase_if(queue, [](const msg &m) { return m.message == 0x200; });
+	uint32_t mk = (mouse_buttons & 1 ? 1 : 0) | (mouse_buttons & 2 ? 2 : 0) | (mouse_buttons & 4 ? 0x10 : 0) |
+		(vk_down[0x10] ? 4 : 0) | (vk_down[0x11] ? 8 : 0);
+	queue.push_back({ main_window(), 0x200 /* WM_MOUSEMOVE */, mk, (uint32_t)mouse_y << 16 | (uint32_t)mouse_x });
+	if (wc_trace) fprintf(stderr, " [pointer to %d, %d]", mouse_x, mouse_y);
+}
+
 API(USER32, SetCursorPos, 2)
 {
-	mouse_x = std::clamp((int)arg(0), 0, 639);
-	mouse_y = std::clamp((int)arg(1), 0, 479);
+	user_set_pointer((int)arg(0), (int)arg(1));
 	return 1;
 }
 

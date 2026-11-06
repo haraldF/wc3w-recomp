@@ -196,6 +196,10 @@ Addresses where the generated code first calls `wc_hook(addr)` (the generator's 
 a handler registered with `hook_register` may do the work itself (a whole function: set EAX, pop
 the return address) and return true, and the generated function returns; false runs the original
 code. This is how the enhancement patch's code replacements are ported.
+- 452861h (`fixes.cpp`): the pointer centred at a mission's start. The mouse steers by its distance
+  from (320, 240), and the game (also on Windows) left it where Fly MISSION was clicked, at the right
+  edge: the ship turned right from the start. The game knows the pointer only from WM_MOUSEMOVE
+  (state at 4A7E5Ah, flight's copy at 4A9B92h), so SetCursorPos posts one, as Windows does.
 
 ## Debugging
 
