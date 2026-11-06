@@ -1,0 +1,18 @@
+node_modules/
+out/
+# never commit game files or anything derived from them
+*.EXE
+*.exe
+*.DLL
+*.dll
+*.TRE
+*.IFF
+*.iff
+*.bin
+*.png
+*.mp4
+*.DAT
+*.dat
+*.WSG
+.DS_Store
+*.swp
