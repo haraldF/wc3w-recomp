@@ -13,5 +13,17 @@ const char *host_base_dir(void);
 void host_thread(void (*fn)(void *), void *arg);
 /* The program ends with this code, on its thread. */
 [[noreturn]] void host_exit(int code);
+/* The joystick (winmm.cpp), from the host's thread: axes 0..65535 (32767 centred; x left to right,
+ * y up to down), buttons a bit each, the hat in hundredths of a degree (0xffff centred). */
+struct joystick_state {
+	bool present = false;
+	char name[32] = "";
+	unsigned buttons_count = 0;
+	bool has_z = false, has_r = false, has_pov = false;
+	uint32_t x = 32767, y = 32767, z = 32767, r = 32767;
+	uint32_t buttons = 0, pov = 0xffff;
+};
+void win_joystick(const joystick_state &s);
+
 /* A file in the game folder was written or deleted (closed): for a host that keeps such files. */
 void host_file_saved(const char *path);

@@ -148,7 +148,17 @@ under `out/` is generated and ignored.
   `Master_FMVs_Upscaled/inflight`, the patch's other hooks at 422EA5h, 423085h, 433731h), subtitles,
   the patch's colours for the choice text (palette entries 252/253 and its code patches at
   414940h-414983h): conversations are untested.
-- Missing: the joystick (none reported), the self-modifying code: the game makes 476080h-47D7AEh writable
+- The joystick (`winmm.cpp`, the host's `publish_stick`): the game calls `joyGetDevCapsA` once at
+  its start (into 4B2338h; wCaps at 4B2398h: HASZ, HASR, HASPOV decide whether it reads those), so
+  the host opens a stick plugged in before the game thread starts (with `SDL_JOYSTICK_MFI=0`, as in
+  wc3-recomp). It then reads `joyGetPosEx` (flags CFh) all the time: X, Y; Z is the throttle
+  (482AF6h: 100 - (Z - Zmin) * 100 / (Zmax - Zmin) %, so 0 is full; 429320h); R the twist, which
+  turns only beyond the last eighth either side (4A7E38h = -1/1); four buttons; the hat. Axes 0..65535,
+  a flight stick's in SDL's order X, Y, twist, throttle (`WC_STICK_AXES` to change, "-" reverses),
+  a controller's left stick, right stick x as twist, A B X Y, d-pad as hat. In the hangar the stick
+  picks hotspots (the pointer disappears, the label shows) and the trigger goes there. Flight with
+  a stick untested. `WC_JOYSTICK=1`: a virtual stick for WC_KEYS (`%x.y`, `j1`..`j4`).
+- Missing: the self-modifying code: the game makes 476080h-47D7AEh writable
   with `VirtualProtect` (PAGE_EXECUTE_READWRITE): what it patches there isn't known yet (the DOS
   version's texture mapper patched its own displacements; the recompiled code would ignore such
   patches).
@@ -174,8 +184,7 @@ small files, link the `.TRE` files.
 1. The self-modifying code at 476080h.
 2. Playing through: `npm run discover` for code still missing (exit 4), unimplemented functions
    (exit 6).
-3. The joystick through SDL's gamepads (`joyGetPosEx`).
-4. The enhancement patch's features, ported.
+3. The enhancement patch's features, ported (its controller presets and mapping utility too).
 ## Conventions
 
 As in wc3-recomp: TypeScript run directly by Node (≥ 23.6), ESM, `npm run typecheck`; Java Ghidra

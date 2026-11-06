@@ -1,19 +1,90 @@
-/* WINMM: the joystick (none yet: a game controller through SDL is to come) and waveOut, through
+/* WINMM: the joystick (the host's flight stick or game controller: joyGetDevCapsA, joyGetPosEx),
+ * and waveOut, through
  * which XanLib streams its sound: queued WAVEHDRs play on a voice of the mixer (sound.cpp); the
  * ones played are marked done and reported to the program on its thread (wave_out_poll): a
  * callback function is called like an interrupt (all registers kept), a window gets MM_WOM_DONE. */
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <mutex>
 #include <vector>
 
+#include "host.h"
 #include "sound.h"
 #include "win.h"
 
-static const uint32_t JOYERR_UNPLUGGED = 167;
+/* ---- the joystick ----
+ * The game asks for the capabilities once, at its start (so the host registers a stick that's
+ * plugged in before that), then reads X, Y, Z (the throttle), R (the twist: it only turns at the
+ * last eighth of either side), four buttons and the hat (JOYINFOEX flags CFh). */
 
-API(WINMM, joyGetDevCapsA, 3) { return JOYERR_UNPLUGGED; }
-API(WINMM, joyGetPosEx, 2) { return JOYERR_UNPLUGGED; }
+static const uint32_t JOYERR_NOERROR = 0, JOYERR_PARMS = 165, JOYERR_UNPLUGGED = 167;
+static std::mutex joy_lock;
+static joystick_state joy;
+
+void win_joystick(const joystick_state &s)
+{
+	std::lock_guard<std::mutex> g(joy_lock);
+	joy = s;
+}
+
+API(WINMM, joyGetDevCapsA, 3)
+{
+	uint32_t id = arg(0), c = arg(1), size = std::min(arg(2), 404u);
+	joystick_state s;
+	{
+		std::lock_guard<std::mutex> g(joy_lock);
+		s = joy;
+	}
+	if (id != 0) return JOYERR_PARMS;
+	if (!s.present) return JOYERR_UNPLUGGED;
+	memset(M + c, 0, size);
+	if (size < 112) return JOYERR_PARMS;
+	wr16(c, 1);
+	wr16(c + 2, 1);
+	put_str(c + 4, s.name, 32);
+	wr32(c + 40, 65535); /* wXmax */
+	wr32(c + 48, 65535); /* wYmax */
+	wr32(c + 56, 65535); /* wZmax */
+	wr32(c + 60, std::min(s.buttons_count, 32u));
+	wr32(c + 64, 10);    /* wPeriodMin, wPeriodMax: ms */
+	wr32(c + 68, 1000);
+	wr32(c + 76, 65535); /* wRmax */
+	wr32(c + 84, 65535); /* wUmax, wVmax */
+	wr32(c + 92, 65535);
+	/* wCaps: JOYCAPS_HASZ 1, HASR 2, HASPOV 0x10, POV4DIR 0x20 */
+	wr32(c + 96, (s.has_z ? 1 : 0) | (s.has_r ? 2 : 0) | (s.has_pov ? 0x30 : 0));
+	wr32(c + 100, 6);
+	wr32(c + 104, 2 + (s.has_z ? 1 : 0) + (s.has_r ? 1 : 0));
+	wr32(c + 108, 32);
+	if (wc_trace) fprintf(stderr, " [joystick \"%s\": %u buttons%s%s%s]", s.name, s.buttons_count, s.has_z ? ", throttle" : "",
+		s.has_r ? ", twist" : "", s.has_pov ? ", hat" : "");
+	return JOYERR_NOERROR;
+}
+
+API(WINMM, joyGetPosEx, 2)
+{
+	uint32_t id = arg(0), p = arg(1);
+	joystick_state s;
+	{
+		std::lock_guard<std::mutex> g(joy_lock);
+		s = joy;
+	}
+	if (id != 0) return JOYERR_PARMS;
+	if (!s.present) return JOYERR_UNPLUGGED;
+	wr32(p + 8, s.x);
+	wr32(p + 12, s.y);
+	wr32(p + 16, s.z);
+	wr32(p + 20, s.r);
+	wr32(p + 24, 32767);
+	wr32(p + 28, 32767);
+	wr32(p + 32, s.buttons);
+	uint32_t number = 0;
+	for (uint32_t b = s.buttons; b; b &= b - 1) number++;
+	wr32(p + 36, number);
+	wr32(p + 40, s.pov);
+	return JOYERR_NOERROR;
+}
 
 void user_post(uint32_t hwnd, uint32_t message, uint32_t wparam, uint32_t lparam); /* user32.cpp */
 

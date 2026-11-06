@@ -7,6 +7,13 @@
  * "tab", "up", "f1", a letter or digit (pressed for 50 ms; "+key" only presses, "-key" only
  * releases), "lmb"/"rmb" (a click), "@x.y" (the mouse to x, y of 640x480).
  * WC_WAV=file: record the sound (also headless).
+ * The joystick: the first flight stick or game controller (one plugged in at the start: the game
+ * looks for it once). A stick's axes are X, Y, twist and throttle in the order SDL reports them
+ * (0, 1, 2, 3; with three axes the third is the throttle); WC_STICK_AXES=x,y,twist,throttle picks
+ * others (-1: none; a minus before an axis turns it around, e.g. 0,1,2,-3 for a throttle that
+ * reads backwards). A controller: the left stick, the right stick's x as the twist, A B X Y the
+ * buttons, the d-pad the hat. WC_JOYSTICK=1: a virtual stick when there is none (for WC_KEYS:
+ * "%x.y" moves it, -100..100, "j1".."j4" press its buttons).
  * WC_HEADLESS=1: no window. WC_SCREENSHOT=file.png: the picture after WC_SCREENSHOT_AT seconds
  * (default 10), then the program ends (also headless); with WC_DUMP=file the memory too. */
 #include <algorithm>
@@ -111,6 +118,146 @@ static void key(const SDL_KeyboardEvent *e)
 	}
 }
 
+/* ---- the joystick ---- */
+
+static SDL_Joystick *stick;
+static SDL_Gamepad *pad;
+static int axis_of[4] = { 0, 1, -1, -1 }; /* x, y, twist, throttle; -1: none */
+static bool axis_reversed[4];
+static bool virtual_stick;
+static joystick_state virtual_state;
+
+static void open_stick(SDL_JoystickID id)
+{
+	if (stick || pad) return;
+	if (SDL_IsGamepad(id)) {
+		pad = SDL_OpenGamepad(id);
+		if (pad) fprintf(stderr, "wc: game controller \"%s\" as the joystick\n", SDL_GetGamepadName(pad));
+		return;
+	}
+	stick = SDL_OpenJoystick(id);
+	if (!stick) return;
+	int n = SDL_GetNumJoystickAxes(stick);
+	axis_of[2] = n >= 4 ? 2 : -1;
+	axis_of[3] = n >= 4 ? 3 : n == 3 ? 2 : -1;
+	if (const char *e = getenv("WC_STICK_AXES")) {
+		const char *p = e;
+		for (int i = 0; i < 4 && *p; i++) {
+			char *end;
+			axis_reversed[i] = *p == '-' && p[1] != '1';
+			long a = strtol(axis_reversed[i] ? p + 1 : p, &end, 10);
+			axis_of[i] = a < n ? (int)a : -1;
+			p = *end == ',' ? end + 1 : end;
+		}
+	}
+	static const char *what[] = { "x", "y", "twist", "throttle" };
+	fprintf(stderr, "wc: joystick \"%s\": %d axes (", SDL_GetJoystickName(stick), n);
+	for (int i = 0; i < 4; i++) {
+		fprintf(stderr, "%s%s %s", i ? ", " : "", what[i], axis_of[i] < 0 ? "none" : (axis_reversed[i] ? "-" + std::to_string(axis_of[i]) : std::to_string(axis_of[i])).c_str());
+	}
+	fprintf(stderr, "), %d buttons, %d hats (WC_STICK_AXES)\n", SDL_GetNumJoystickButtons(stick), SDL_GetNumJoystickHats(stick));
+}
+
+/* The sticks there are at the start: the game looks for one before the first event comes */
+static void open_sticks(void)
+{
+	/* macOS's GameController framework claims HID joysticks such as flight sticks without reporting
+	 * them; without it, IOKit and HIDAPI see them all (SDL_JOYSTICK_MFI=1 overrides this) */
+	SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "0");
+	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) return;
+	int n = 0;
+	SDL_JoystickID *ids = SDL_GetJoysticks(&n);
+	for (int i = 0; i < n; i++) open_stick(ids[i]);
+	SDL_free(ids);
+	const char *v = getenv("WC_JOYSTICK");
+	virtual_stick = !stick && !pad && v && *v == '1';
+	if (virtual_stick) {
+		virtual_state.present = true;
+		strcpy(virtual_state.name, "virtual");
+		virtual_state.buttons_count = 4;
+	}
+}
+
+static void stick_event(const SDL_Event *e)
+{
+	SDL_JoystickID id = e->jdevice.which;
+	if (e->type == SDL_EVENT_JOYSTICK_ADDED) open_stick(id);
+	if (e->type == SDL_EVENT_JOYSTICK_REMOVED) {
+		if (stick && SDL_GetJoystickID(stick) == id) {
+			SDL_CloseJoystick(stick);
+			stick = nullptr;
+		}
+		if (pad && SDL_GetGamepadID(pad) == id) {
+			SDL_CloseGamepad(pad);
+			pad = nullptr;
+		}
+	}
+}
+
+/* -32768..32767 to 0..65535, with a little dead zone in the middle (sticks don't quite centre) */
+static uint32_t axis_value(int v, bool reversed, bool dead_zone)
+{
+	if (reversed) v = -1 - v;
+	if (dead_zone && v > -1000 && v < 1000) v = 0;
+	return (uint32_t)(v + 32768) - (v == 0 ? 1 : 0);
+}
+
+static uint32_t hat_value(uint8_t h)
+{
+	static const struct { uint8_t hat; uint32_t pov; } dirs[] = {
+		{ SDL_HAT_UP, 0 }, { SDL_HAT_RIGHTUP, 4500 }, { SDL_HAT_RIGHT, 9000 }, { SDL_HAT_RIGHTDOWN, 13500 },
+		{ SDL_HAT_DOWN, 18000 }, { SDL_HAT_LEFTDOWN, 22500 }, { SDL_HAT_LEFT, 27000 }, { SDL_HAT_LEFTUP, 31500 },
+	};
+	for (const auto &d : dirs) {
+		if (d.hat == h) return d.pov;
+	}
+	return 0xffff;
+}
+
+static void publish_stick(void)
+{
+	joystick_state s;
+	if (stick) {
+		s.present = true;
+		snprintf(s.name, sizeof s.name, "%s", SDL_GetJoystickName(stick));
+		s.buttons_count = (unsigned)std::min(SDL_GetNumJoystickButtons(stick), 32);
+		uint32_t *v[4] = { &s.x, &s.y, &s.r, &s.z };
+		for (int i = 0; i < 4; i++) {
+			if (axis_of[i] >= 0) *v[i] = axis_value(SDL_GetJoystickAxis(stick, axis_of[i]), axis_reversed[i], i < 2);
+		}
+		s.has_r = axis_of[2] >= 0;
+		s.has_z = axis_of[3] >= 0;
+		for (unsigned b = 0; b < s.buttons_count; b++) {
+			if (SDL_GetJoystickButton(stick, (int)b)) s.buttons |= 1u << b;
+		}
+		s.has_pov = SDL_GetNumJoystickHats(stick) > 0;
+		if (s.has_pov) s.pov = hat_value(SDL_GetJoystickHat(stick, 0));
+	}
+	else if (pad) {
+		s.present = true;
+		snprintf(s.name, sizeof s.name, "%s", SDL_GetGamepadName(pad));
+		s.buttons_count = 4;
+		s.x = axis_value(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX), false, true);
+		s.y = axis_value(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY), false, true);
+		s.r = axis_value(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX), false, true);
+		s.has_r = s.has_pov = true;
+		static const SDL_GamepadButton order[] = { SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_WEST,
+			SDL_GAMEPAD_BUTTON_NORTH };
+		for (int b = 0; b < 4; b++) {
+			if (SDL_GetGamepadButton(pad, order[b])) s.buttons |= 1u << b;
+		}
+		uint8_t h = (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_UP) ? SDL_HAT_UP : 0) |
+			(SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN) ? SDL_HAT_DOWN : 0) |
+			(SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT) ? SDL_HAT_LEFT : 0) |
+			(SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) ? SDL_HAT_RIGHT : 0);
+		s.pov = hat_value(h);
+	}
+	else if (virtual_stick) {
+		s = virtual_state;
+	}
+	win_joystick(s);
+}
+
 /* ---- WC_KEYS ---- */
 
 struct scripted {
@@ -172,6 +319,18 @@ static void play_script(int now_ms, int *buttons)
 			int x = 0, y = 0;
 			sscanf(k.what.c_str() + 1, "%d.%d", &x, &y);
 			win_mouse_at(x, y);
+			continue;
+		}
+		if (k.what[0] == '%') {
+			int x = 0, y = 0;
+			sscanf(k.what.c_str() + 1, "%d.%d", &x, &y);
+			virtual_state.x = (uint32_t)std::clamp(32767 + x * 32767 / 100, 0, 65535);
+			virtual_state.y = (uint32_t)std::clamp(32767 + y * 32767 / 100, 0, 65535);
+			continue;
+		}
+		if (k.what.size() == 2 && k.what[0] == 'j' && k.what[1] >= '1' && k.what[1] <= '4') {
+			uint32_t bit = 1u << (k.what[1] - '1');
+			virtual_state.buttons = k.phase == 1 ? virtual_state.buttons | bit : virtual_state.buttons & ~bit;
 			continue;
 		}
 		if (k.what == "lmb" || k.what == "rmb") {
@@ -481,6 +640,8 @@ static bool open_window(void)
 		if (wav) wav_header();
 	}
 	if (!shown || !open_audio()) quiet_audio();
+	open_sticks();
+	publish_stick();
 	start_thread(game_thread, nullptr, "game");
 	auto started = std::chrono::steady_clock::now();
 	const char *shot = getenv("WC_SCREENSHOT");
@@ -495,6 +656,8 @@ static bool open_window(void)
 		}
 		play_script((int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), &buttons);
 		if (!shown) {
+			SDL_UpdateJoysticks();
+			publish_stick();
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			continue;
 		}
@@ -506,6 +669,10 @@ static bool open_window(void)
 			case SDL_EVENT_KEY_DOWN:
 			case SDL_EVENT_KEY_UP:
 				key(&e.key);
+				break;
+			case SDL_EVENT_JOYSTICK_ADDED:
+			case SDL_EVENT_JOYSTICK_REMOVED:
+				stick_event(&e);
 				break;
 			case SDL_EVENT_MOUSE_MOTION: {
 				/* window pixels to the picture's: as much as crossing the picture on the screen */
@@ -528,6 +695,7 @@ static bool open_window(void)
 			}
 			}
 		}
+		publish_stick();
 		show_frame(); /* paced by vsync */
 	}
 }
