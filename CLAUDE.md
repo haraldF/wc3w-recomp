@@ -110,6 +110,9 @@ under `out/` is generated and ignored.
   at Sleep, a critical section another thread holds, an empty message queue, and every 65536
   instructions. The game starts a thread (41B700h) for each movie, ends it with `TerminateThread`
   (the host thread then ends with an exception thrown where it waits).
+  `R[]` must hold Ghidra's whole register space, the x87 registers too (control word 10A0h, ST0-7
+  from 1100h, up to 128Fh): at 0x400 bytes, starting a thread wrote 27Fh 3 KB past its saved
+  registers into the host's heap, and macOS crashed in its menu code (NSMenu) on a later key.
 - `user32.cpp`: one window; messages (the host's keyboard as WM_KEYDOWN/WM_SYSKEYDOWN with virtual
   keys and scan codes, WM_CHAR from TranslateMessage, the mouse as relative movement onto a 640x480
   position that SetCursorPos also sets); ShowWindow sends WM_ACTIVATEAPP and WM_ACTIVATE.

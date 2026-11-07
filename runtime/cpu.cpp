@@ -10,7 +10,7 @@
 #include "wc_rt.h"
 #include "win.h"
 
-uint8_t R[0x400];
+uint8_t R[R_SIZE];
 uint8_t M[MEM_SIZE + 16];
 uint64_t wc_icount;
 int wc_trace;

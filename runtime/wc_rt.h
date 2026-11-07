@@ -20,7 +20,8 @@ enum {
 };
 
 #define MEM_SIZE 0x8000000u /* 128 MB */
-extern uint8_t R[0x400];
+#define R_SIZE 0x1400u /* up to the x87 registers (10A0h-1180h) and 1280h-128Fh */
+extern uint8_t R[R_SIZE];
 extern uint8_t M[MEM_SIZE + 16];
 extern uint64_t wc_icount;
 extern int wc_trace;
