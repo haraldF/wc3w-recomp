@@ -172,7 +172,9 @@ under `out/` is generated and ignored.
 `*.WSG`: IFF FORM SAVE. `src/print-save.ts` (`npm run print-save`) shows morale and kills; its header has what
 the code does with them. PILT is morale + 1 per pilot slot (0 dead; negative: no ejection when shot
 down, set by the gameflow), KILL the kills, ACE_ the aces shot down (both on the killboard); the killboard's names by slot (415C3Eh): 1 Cobra,
-2 Vagabond, 4 Flash, 6 Hobbes, 7 Vaquero, 8 Maniac, 9 Flint. `WSG_NDX.WSG` is the slots' index.
+2 Vagabond, 4 Flash, 6 Hobbes, 7 Vaquero, 8 Maniac, 9 Flint; slot 0 is the ship's morale (only
+conversations read it). PLYR has the player's kills and aces, STAT the scene (the mission counter).
+`WSG_NDX.WSG` is the slots' index.
 
 ## Archives and missions
 
