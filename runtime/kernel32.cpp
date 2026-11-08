@@ -90,6 +90,14 @@ static bool host_path(const std::string &name, fs::path *out)
 	return true;
 }
 
+/* A regular file at the program's path (fixes.cpp: the DATA folder's files) */
+bool win_file_exists(const std::string &name)
+{
+	fs::path p;
+	std::error_code ec;
+	return host_path(name, &p) && fs::is_regular_file(p, ec);
+}
+
 /* ---- the C library's startup ---- */
 
 API(KERNEL32, GetVersion, 0) { return 0xc0000004; } /* Windows 95: 4.0, high bit set */

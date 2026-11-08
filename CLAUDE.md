@@ -180,7 +180,8 @@ down, set by the gameflow), KILL the kills, ACE_ the aces shot down (both on the
   path the game asks for (`..\..\DATA\MISSIONS\MISNL004.IFF`: rotate left 3, add the character);
   only a few keep their path in the archive, the others are named by hashing guesses (words from the
   missions and scenes name all 67 missions). Packed entries: LZW (bit 31) or RefPack (bits 31 and 30).
-- `DATA/GAMEFLOW/SCENxxxx.IFF` in the game folder are the scenes as loose files. Their CODE chunks are
+- `DATA/GAMEFLOW/SCENxxxx.IFF` in the game folder are the scenes as loose files (the remaster's
+  versions, which the game loads instead of the archived ones). Their CODE chunks are
   a stack bytecode (FACEh-tagged opcodes) that branches on the gameflow registers (REGS) and flags.
 - Missions (`src/print-mission.ts`): the script is pairs of FEED00xxh and an operand, run by
   44C780h on unit events (a kill runs the unit's "destroyed" handler, which counts it). The outcome
@@ -192,8 +193,7 @@ down, set by the gameflow), KILL the kills, ACE_ the aces shot down (both on the
   AREA they name). The generator blows up when 4 of the Ekapshi are down (opcode 90h, which launches
   the last two), which is not the success, and the autopilot lets you leave NAV 1 with tanks alive.
   The user's "disaster" landing was that, not a port bug; with the NAV 1 tanks down it succeeded.
-- `DATA/` overrides: the remaster's patch (ddraw.dll) loads `..\..\DATA\...` from the game folder's
-  `DATA` before the archives; the port doesn't, and the loose scenes differ from the archived ones.
+- `DATA/GAMEFLOW` etc. in the game folder override the archives (the hook at 483A82h, below).
 
 ## Playing it by script
 
@@ -231,6 +231,11 @@ code. This is how the enhancement patch's code replacements are ported.
   from (320, 240), and the game (also on Windows) left it where Fly MISSION was clicked, at the right
   edge: the ship turned right from the start. The game knows the pointer only from WM_MOUSEMOVE
   (state at 4A7E5Ah, flight's copy at 4A9B92h), so SetCursorPos posts one, as Windows does.
+- 483A82h (`fixes.cpp`): the remaster's `DATA` folder. Its patch looks for a file the game wants
+  from an archive (`..\..\DATA\...`) in the game folder's `DATA` first, renaming it to `.\DATA\...`
+  before the archive lookup (484CB0h), which then misses. The loose files are the remaster's fixes:
+  the ship's scenes (room 6 no longer resets reg 31 first; scenes 42-45 and VICTORY change hotspots),
+  profiles, some in-flight movies, MEDF_H. `WC_TRACE=1` shows each as `[DATA: ...]`.
 
 ## Debugging
 

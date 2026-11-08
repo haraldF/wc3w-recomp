@@ -96,6 +96,7 @@ void win_poll(void);
 void win_start(const char *game_dir, int argc, char **argv);
 [[noreturn]] void win_main(void);
 extern std::string win_game_dir;
+bool win_file_exists(const std::string &name); /* a file at the program's path (kernel32.cpp) */
 extern uint32_t win_cmdline, win_cmdline_w, win_environment, win_environment_w;
 
 /* The module a handle (its base) or name is; nullptr if none */
