@@ -54,6 +54,15 @@ The wingmen's morale (0-15, which the game never shows), kills and aces shot dow
 npm run print-save
 ```
 
+The flight missions with their objectives, units and scripts (what a mission counts as success),
+from `MISSIONS.TRE`; any archive's entries unpacked:
+
+```bash
+npm run print-mission                # the list
+npm run print-mission -- MISNLG04    # one of them
+npm run tre -- path/to/MISSIONS.TRE out/tre
+```
+
 ## License
 
 BSD 2-Clause (`LICENSE`), for this repository's own code.
