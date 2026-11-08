@@ -188,11 +188,11 @@ down, set by the gameflow), KILL the kills, ACE_ the aces shot down (both on the
   is reg 12, which the script sets when the mission ends (1 success; the scene then plays the landing
   for it), and the next scene. A planetary mission is several files: MISNL004 (space) loads MISNLG04
   (the surface), which loads MISNLG4A (the way home), passing the result in reg 49.
-- Freya 2 (MISNL004/MISNLG04, the shield generator) is a success only with all 16 units on the
-  surface destroyed: the 12 Ekapshi and the 4 KTANKs at NAV 1 (unit positions are relative to the
-  AREA they name). The generator blows up when 4 of the Ekapshi are down (opcode 90h, which launches
-  the last two), which is not the success, and the autopilot lets you leave NAV 1 with tanks alive.
-  The user's "disaster" landing was that, not a port bug; with the NAV 1 tanks down it succeeded.
+- Alcor 4 (MISNL004/MISNLG04, the ground strike on Alcor 5; save scene 39) is a success only with
+  all 16 units on the surface destroyed: the 12 Ekapshi and the 4 KTANKs at NAV 1 (unit positions
+  are relative to the AREA they name). When 4 of the Ekapshi are down the script launches the last
+  two (opcode 90h). The autopilot lets you leave NAV 1 with tanks alive. The user's "disaster"
+  landing was that, not a port bug; with the NAV 1 tanks down it succeeded.
 - `DATA/GAMEFLOW` etc. in the game folder override the archives (the hook at 483A82h, below).
 
 ## Playing it by script
