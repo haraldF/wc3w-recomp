@@ -13,6 +13,7 @@
     "build": "node src/cli.ts build",
     "discover": "node src/cli.ts discover",
     "play": "node src/cli.ts play",
+    "print-save": "node src/print-save.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

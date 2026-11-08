@@ -167,6 +167,13 @@ under `out/` is generated and ignored.
   patched-constant handling covers them: 1560 instructions read such constants from memory
   (`mrd32(0x478511, 4)`). A memory dump in flight shows 45 dwords changed there.
 
+## Saved games
+
+`*.WSG`: IFF FORM SAVE. `src/print-save.ts` (`npm run print-save`) shows morale and kills; its header has what
+the code does with them. PILT is morale + 1 per pilot slot (0 dead; negative: no ejection when shot
+down, set by the gameflow), KILL the kills, ACE_ the aces shot down (both on the killboard); the killboard's names by slot (415C3Eh): 1 Cobra,
+2 Vagabond, 4 Flash, 6 Hobbes, 7 Vaquero, 8 Maniac, 9 Flint. `WSG_NDX.WSG` is the slots' index.
+
 ## Playing it by script
 
 `WC_KEYS` in real time (ms after the start), mouse positions in 640x480, from a scratch game folder

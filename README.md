@@ -47,6 +47,13 @@ out/bin/wc3w path/to/Kilrathi_Saga
 
 Cmd+F toggles full screen, Cmd+Q quits. The mouse is captured while the window has it.
 
+The wingmen's morale (0-15, which the game never shows), kills and aces shot down, from the saved games
+(`*.WSG` in the game folder, or the files given):
+
+```bash
+npm run print-save
+```
+
 ## License
 
 BSD 2-Clause (`LICENSE`), for this repository's own code.
