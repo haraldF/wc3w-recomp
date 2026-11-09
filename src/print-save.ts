@@ -77,11 +77,13 @@ for (const file of files) {
     const when = statSync(file).mtime.toLocaleString();
     const where = [stat && stat.length >= 8 ? `scene ${stat.readInt32LE(4)}` : "", info && info.length >= 8 ? `CD ${info.readInt32LE(4)}` : ""];
     console.log(`${path.basename(file)}  ${callsign}  ${where.filter(Boolean).join(", ")}  (${when})`);
-    if (plyr && plyr.length >= 8)
-      console.log(`  ${callsign.padEnd(9)} kills ${plyr.readInt32LE(0)}  aces ${plyr.readInt32LE(4)}`);
-    console.log(`  ship      morale ${morale(pilt[0]).trim()}`);
-    for (const [i, name] of pilots)
-      console.log(`  ${name.padEnd(9)} morale ${morale(pilt[i]).padEnd(20)} kills ${String(kill[i]).padStart(4)}  aces ${ace[i]}`);
+    // name, morale, kills and aces in columns
+    const row = (name: string, m: string, kills?: number, aces?: number) =>
+      console.log((`  ${name.padEnd(9)} ${m ? `morale ${m}` : ""}`.padEnd(40) +
+        (kills === undefined ? "" : `kills ${String(kills).padStart(4)}  aces ${aces}`)).trimEnd());
+    if (plyr && plyr.length >= 8) row(callsign, "", plyr.readInt32LE(0), plyr.readInt32LE(4));
+    row("ship", morale(pilt[0]));
+    for (const [i, name] of pilots) row(name, morale(pilt[i]), kill[i], ace[i]);
     console.log(`  other slots: ${unnamed.map((i) => `${i}: ${morale(pilt[i]).trim()}`).join("; ")}`);
   } catch (e) {
     console.log(`${path.basename(file)}: ${(e as Error).message}`);
