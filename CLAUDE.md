@@ -86,6 +86,20 @@ under `out/` is generated and ignored.
   carry (`x87_ld80`, `x87_st80`), both as LOADs and as address varnodes: read as 8 bytes, `pow`
   compared against a NaN and returned 0, so the gamma table (41DB50h) was all 0 and every palette
   black.
+- x87 rounding: `FIST`/`FISTP`/`FRNDINT` (p-code `round` then `trunc`) round as the control word's
+  RC bits say. The C library's `_ftol` (491110h) sets chop before its `FISTP`, so `(int)f`
+  truncates; before (until wc4w-recomp found it) it rounded to nearest. NaN or a value too large
+  for the integer stores the integer indefinite (80000000h), as x86 does.
+- Division: every `INT_DIV`/`INT_SDIV` comes from `DIV`/`IDIV`, whose quotient must fit in half the
+  dividend. x86 faults (#DE) when it doesn't; here the quotient is truncated and the instruction
+  reported once ("wc: divide overflow at"); `WC_STRICT=1` stops there. `INT64_MIN / -1` wraps.
+- `recomp` and `decompile` record what they were made from (`out/recomp/inputs.json`,
+  `out/ghidra/inputs.json`: SHA-256 of the image, the labels, the scripts, `entries.txt`,
+  `code-pointers.txt`, `hooks.txt`, Ghidra's version). `recomp` skips the generator when nothing
+  changed (`--force`), refuses a Ghidra project made from another image or by another Ghidra, and,
+  since analyzeHeadless exits 0 when a script throws, checks `out/recomp/summary.json` (written
+  last): every hook placed, no more than the 3 known unhandled p-code ops (`UNHANDLED_OPS`). `build`
+  refuses when the generator's inputs changed. Fragments follow only flows into the image.
 
 ## The runtime (runtime/)
 
@@ -238,15 +252,59 @@ code. This is how the enhancement patch's code replacements are ported.
   before the archive lookup (484CB0h), which then misses. The loose files are the remaster's fixes:
   the ship's scenes (room 6 no longer resets reg 31 first; scenes 42-45 and VICTORY change hotspots),
   profiles, some in-flight movies, MEDF_H. `WC_TRACE=1` shows each as `[DATA: ...]`.
+- 46EABCh, 46EACFh, 46EADEh (`fixes.cpp`): `a * 256 / b`, `a * b / 256`, `a * b / c` (cdecl,
+  IMUL then IDIV on EDX:EAX), the same functions as WC4W.EXE's 49D73Ch..., whose overflowing IDIV
+  the Wing Commander IV enhancement patch replaces with 64-bit arithmetic cut to 32 bits
+  ("crashes when imul/idiv were overflowing"). The recompiled IDIV gave that result already; the
+  hooks only keep the overflow reports away. A zero divisor still stops the program.
+- The two lists must agree, and both sides check: `recomp` fails on an address in `hooks.txt` that
+  isn't an instruction; the runtime stops at the start when a `hook_register` address has no
+  generated `wc_hook` call (`wc_hook_addr` in `wc_dispatch.cpp`), and says so when `hooks.txt` has an
+  address without a handler.
 
 ## Debugging
 
 `WC_TRACE=1` (Windows calls, their arguments and results), `WC_TRACE=2` (every instruction) with
 `WC_TRACE_AT=addr,lo-hi,...` (only those, with ST0-ST2 and the x87 control word), `WC_WATCH=addr`,
 `WC_HEADLESS=1`, `WC_WAV=file.wav`, `WC_SCREENSHOT=file.png` after `WC_SCREENSHOT_AT` seconds (with `WC_DUMP=file`
-the memory too), `WC_KEYS=ms:key,...` (real time: e.g. `3000:esc,6000:esc,9000:esc` skips the intro
-to the hangar). Test in a scratch copy of the game folder (the game writes saves there): copy the
-small files, link the `.TRE` files.
+the memory too), `WC_KEYS=ms:key,...` (e.g. `3000:esc,6000:esc,9000:esc` skips the intro to the
+hangar). Test in a scratch copy of the game folder (the game writes saves there): copy the small
+files, link the `.TRE` files.
+- `WC_STRICT=1` stops where Windows would fault: memory outside 10000h-MEM_SIZE (otherwise wrapped
+  and reported once for each instruction: "wc: read of 4 bytes at ..., outside memory"), a
+  `DIV`/`IDIV` quotient too large. A bad pointer handed to a Windows function (`guest_ptr` in
+  `win.h`: every block the runtime reads or writes directly) always stops the program.
+- `WC_VIRTUAL_TIME=1` (headless only; `clock.cpp`, `host.h`): one virtual clock for everything
+  (`QueryPerformanceCounter`, message times, `Sleep` and the thread scheduler, the vertical blank,
+  the movies, `WC_KEYS`, `WC_SCREENSHOT_AT`), advancing with the instructions executed
+  (`WC_VIRTUAL_MIPS`, default 200 million a second); every wait moves it on at once. The host's
+  work (script, mixer, movie frames, screenshot) happens on the program's thread as the clock moves
+  (`host_tick`); real joysticks are ignored; the movie player waits for its decoder. Runs repeat
+  exactly and wait for nothing. The `WC_KEYS` times above are real time; with virtual time they
+  are close but not the same.
+- `npm run smoke [scenario...]`: headless with virtual time (`--realtime`: the real clock) in
+  `out/smoke/game` (a fresh copy without saves), the scenarios of `SCENARIOS` in `cli.ts`: `flight`
+  (a new game: the intro skipped, Flight Control, the briefing, a wingman, Fly MISSION, the
+  autopilot, a target, guns and a missile; in space at 95 s, in 27 s). Fails on a stop, an error, a
+  message from the runtime (but a joystick's and the divide overflow and wrapped memory warnings),
+  or a picture that isn't the scenario's (the mode's depth and a minimum of colours, from "wc:
+  screenshot saved to ... (640x480, 8-bit mode, n instructions)" and the PNG). Without a save,
+  Flight Control has Hobbes where Run SIMULATOR is with one (`@320.300` talks to him). Every
+  `smoke`/`discover`/`play` run's stderr is in `out/logs/`.
+- `npm test`: `node --test` on `test/*.test.ts`, no game files needed: the archive reader (LZW,
+  RefPack, both XTRE versions' hashes, archives made in memory), the PE reader, and the generated
+  code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`: DIV/IDIV, x87 rounding and conversions,
+  80-bit values, flags, memory, the shadow stack). The same files as wc4w-recomp's.
+- `npm run imports` and `build` list the imported Windows functions without an implementation:
+  `RtlUnwind`, `RaiseException`, `UnhandledExceptionFilter`, `ReadConsoleInputA` (after an
+  exception, which the runtime never raises) and `GDI32!StretchDIBits` (what the game draws with
+  before a message box; wc4w-recomp has it).
+- `npm run drift`: the lines that differ from `../wc4w-recomp` (`--other`), by shared file;
+  wc4w-recomp's `WC3W-DIFFERENCES.md` explains them.
+- HD movies, headless: the host keeps calling `movie_frame`, which takes the frames due off the
+  decoder's queue (a movie ends when that is empty). Before, a headless movie never ended by itself
+  and its decoded 1080p frames piled up. Frames are shared with the host, not copied; past the
+  sound's end the movie's clock goes on (a longer video track).
 
 ## Plan
 
@@ -255,6 +313,7 @@ small files, link the `.TRE` files.
 2. The enhancement patch's features, ported (its controller presets and mapping utility too).
 ## Conventions
 
-As in wc3-recomp: TypeScript run directly by Node (≥ 23.6), ESM, `npm run typecheck`; Java Ghidra
+As in wc3-recomp: TypeScript run directly by Node (≥ 24.2: `import.meta.main`), ESM, `npm run
+typecheck`, `npm test`; Java Ghidra
 scripts in `ghidra_scripts/`; C++23 runtime, tab-indented, short comments; the standard library
 rather than POSIX. Ghidra 12.2 (Homebrew; JAVA_HOME from the `ghidraRun` wrapper).

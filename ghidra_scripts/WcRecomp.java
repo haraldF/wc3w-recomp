@@ -13,14 +13,16 @@
 //    through seg_load().
 //  - x87 values are carried as doubles (x87_* in wc_rt.h).
 // Started as wc3-recomp's generator (the DOS version), without its drivers loaded at run time.
-// Writes <out>/seg_*.cpp (16 KB of code each), <out>/wc_dispatch.cpp, <out>/wc_gen.h and <out>/image.bin.
+// Writes <out>/seg_*.cpp (16 KB of code each), <out>/wc_dispatch.cpp, <out>/wc_gen.h, <out>/image.bin and
+// <out>/summary.json (the counts, and the hooks that aren't at an instruction: cli.ts checks them).
 // Code reached only through pointers in data has no Ghidra function; list such entry points (hex,
 // one per line) in the entries file and they get recompiled too, along with any functions they
 // call. The runtime reports such addresses ("npm run discover").
 // Code pointers (hex, one per line: the targets of the image's base relocations that are in code)
 // outside every Ghidra function are decoded the same way.
 // Hooks (hex, one per line, "#" comments): at these instructions the code first asks the runtime
-// (wc_hook) whether it handles them itself (e.g. a function it replaces), and returns if so.
+// (wc_hook) whether it handles them itself (e.g. a function it replaces), and returns if so. The
+// hooked instructions are listed for the runtime (wc_hook_addr), which checks its handlers against them.
 // Args: <output dir> <entries file> [<code pointers file> [<hooks file>]]
 //@category WC
 
@@ -69,7 +71,9 @@ public class WcRecomp extends GhidraScript {
 	 * displacements); the instruction being translated */
 	private final Set<Long> patched = new HashSet<>();
 	private Instruction current;
-	private final Set<Long> hooks = new HashSet<>();
+	private final Set<Long> hooks = new TreeSet<>();
+	/** the hooks whose instruction was emitted (each must be: the summary lists the others) */
+	private final Set<Long> hooked = new TreeSet<>();
 
 	@Override
 	protected void run() throws Exception {
@@ -172,6 +176,14 @@ public class WcRecomp extends GhidraScript {
 		block.getBytes(block.getStart(), image);
 		Files.write(out.resolve("image.bin"), image);
 		writeHeaderAndDispatch(out, owner, block.getStart().getOffset(), block.getEnd().getOffset() + 1);
+		// What cli.ts checks afterwards (a script's failure doesn't fail analyzeHeadless): written last.
+		Set<Long> missing = new TreeSet<>(hooks);
+		missing.removeAll(hooked);
+		Files.writeString(out.resolve("summary.json"), String.format(
+			"{ \"functions\": %d, \"fragments\": %d, \"instructions\": %d, \"files\": %d, \"unhandled\": %d, " +
+			"\"hooks\": %d, \"missingHooks\": [%s] }\n", functions.size(), fragments.size(), owner.size(), files.size(),
+			unhandled, hooked.size(),
+			String.join(", ", missing.stream().map(a -> "\"" + Long.toHexString(a) + "\"").toList())));
 		println(String.format("WcRecomp: %d functions + %d discovered fragments, %d instructions in %d files; " +
 			"%d far jump fixes, %d IRET fixes, %d LSL fixes, %d unhandled p-code ops", functions.size(), fragments.size(),
 			owner.size(), files.size(), farJumpFixes, iretFixes, lslFixes, unhandled));
@@ -312,7 +324,10 @@ public class WcRecomp extends GhidraScript {
 				}
 				body.put(x.getOffset(), pi);
 				for (Address t : pi.getFlows()) {
-					(pi.getFlowType().isCall() ? pending : work).add(t);
+					// data decoded as code "jumps" anywhere: only what is in the image can be code
+					if (currentProgram.getMemory().contains(t)) {
+						(pi.getFlowType().isCall() ? pending : work).add(t);
+					}
 				}
 				if (pi.getFallThrough() != null) {
 					work.add(pi.getFallThrough());
@@ -373,6 +388,7 @@ public class WcRecomp extends GhidraScript {
 				.append("); /* ").append(ins.getAddress()).append(" ").append(ins.toString().replace("*/", "* /"))
 				.append(" */\n");
 		if (hooks.contains(at)) {
+			hooked.add(at);
 			c.append("\tif (wc_hook(0x").append(Long.toHexString(at)).append(")) return;\n");
 		}
 
@@ -469,7 +485,9 @@ public class WcRecomp extends GhidraScript {
 			case PcodeOp.INT_AND: return set(out, a + " & " + b, uniques);
 			case PcodeOp.INT_OR: return set(out, a + " | " + b, uniques);
 			case PcodeOp.INT_XOR: return set(out, a + " ^ " + b, uniques);
-			case PcodeOp.INT_DIV: return set(out, "udiv(" + a + ", " + b + ", 0x" + Long.toHexString(at) + ")", uniques);
+			// DIV and IDIV: the size is the dividend's, whose quotient must fit in half of it (wc_rt.h)
+			case PcodeOp.INT_DIV:
+				return set(out, "udiv(" + a + ", " + b + ", " + as + ", 0x" + Long.toHexString(at) + ")", uniques);
 			case PcodeOp.INT_REM: return set(out, "urem(" + a + ", " + b + ", 0x" + Long.toHexString(at) + ")", uniques);
 			case PcodeOp.INT_SDIV:
 				return set(out, "sdiv(" + a + ", " + b + ", " + as + ", 0x" + Long.toHexString(at) + ")", uniques);
@@ -506,7 +524,7 @@ public class WcRecomp extends GhidraScript {
 			// x87: ST registers (10 bytes) carry doubles; 4- and 8-byte values are floats and doubles
 			case PcodeOp.FLOAT_FLOAT2FLOAT: return set(out, "x87_fcvt(" + a + ", " + as + ", " + os + ")", uniques);
 			case PcodeOp.FLOAT_INT2FLOAT: return set(out, "x87_fint(" + a + ", " + as + ", " + os + ")", uniques);
-			case PcodeOp.FLOAT_TRUNC: return set(out, "x87_ftrunc(" + a + ", " + as + ")", uniques);
+			case PcodeOp.FLOAT_TRUNC: return set(out, "x87_ftrunc(" + a + ", " + as + ", " + os + ")", uniques);
 			case PcodeOp.FLOAT_ADD: return set(out, "x87_fadd(" + a + ", " + b + ", " + as + ")", uniques);
 			case PcodeOp.FLOAT_SUB: return set(out, "x87_fsub(" + a + ", " + b + ", " + as + ")", uniques);
 			case PcodeOp.FLOAT_MULT: return set(out, "x87_fmul(" + a + ", " + b + ", " + as + ")", uniques);
@@ -776,7 +794,11 @@ public class WcRecomp extends GhidraScript {
 		for (String fn : owner.values()) {
 			d.append(fn).append(",\n");
 		}
-		d.append("};\nconst uint32_t wc_image_lo = 0x").append(Long.toHexString(imageLo)).append(", wc_image_hi = 0x")
+		d.append("};\nconst uint32_t wc_hook_addr[] = {");
+		for (long a : hooked) {
+			d.append(" 0x").append(Long.toHexString(a)).append(",");
+		}
+		d.append(" 0 };\nconst uint32_t wc_image_lo = 0x").append(Long.toHexString(imageLo)).append(", wc_image_hi = 0x")
 			.append(Long.toHexString(imageHi)).append(";\n");
 		writeIfChanged(out.resolve("wc_dispatch.cpp"), d.toString());
 	}

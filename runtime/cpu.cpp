@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <set>
 #include <vector>
 
 #include "host.h"
@@ -14,6 +16,7 @@ uint8_t R[R_SIZE];
 uint8_t M[MEM_SIZE + 16];
 uint64_t wc_icount;
 int wc_trace;
+int wc_strict;
 uint32_t wc_watch, wc_last_ins;
 uint32_t wc_ret_stack[WC_RET_STACK];
 int wc_ret_depth;
@@ -103,12 +106,30 @@ uint64_t seg_limit(uint64_t selector)
 /* ---- x87 helpers ---- */
 
 uint64_t x87_fint(uint64_t a, int from, int to) { return x87_fbits((double)sx(a, from), to); }
-uint64_t x87_ftrunc(uint64_t a, int size) { return (uint64_t)(int64_t)x87_fval(a, size); }
+/* FIST and FISTP store the integer indefinite (only the sign bit set) for NaN and values out of range */
+uint64_t x87_ftrunc(uint64_t a, int size, int to)
+{
+	double d = trunc(x87_fval(a, size)), lim = ldexp(1.0, 8 * to - 1);
+	if (!(d >= -lim && d < lim)) return 1ULL << (8 * to - 1);
+	return (uint64_t)(int64_t)d;
+}
 uint64_t x87_fabs(uint64_t a, int s) { return x87_fbits(fabs(x87_fval(a, s)), s); }
 uint64_t x87_fsqrt(uint64_t a, int s) { return x87_fbits(sqrt(x87_fval(a, s)), s); }
 uint64_t x87_fceil(uint64_t a, int s) { return x87_fbits(ceil(x87_fval(a, s)), s); }
 uint64_t x87_ffloor(uint64_t a, int s) { return x87_fbits(floor(x87_fval(a, s)), s); }
-uint64_t x87_fround(uint64_t a, int s) { return x87_fbits(nearbyint(x87_fval(a, s)), s); }
+/* FIST, FISTP and FRNDINT round as the control word's RC (bits 10-11) says: the C library's _ftol
+ * (491110h) sets 11b, chop, so that (int)f truncates. */
+uint64_t x87_fround(uint64_t a, int s)
+{
+	double d = x87_fval(a, s);
+	switch ((rd(R_FPCW, 2) >> 10) & 3) {
+	case 0: d = nearbyint(d); break; /* to nearest, even (the host's default) */
+	case 1: d = floor(d); break;
+	case 2: d = ceil(d); break;
+	default: d = trunc(d); break;
+	}
+	return x87_fbits(d, s);
+}
 uint64_t x87_fnan(uint64_t a, int s) { return std::isnan(x87_fval(a, s)); }
 uint64_t x87_f2xm1(uint64_t a, int s) { return x87_fbits(exp2(x87_fval(a, s)) - 1, s); }
 uint64_t x87_fscale(uint64_t a, uint64_t b, int s) { return x87_fbits(ldexp(x87_fval(a, s), (int)trunc(x87_fval(b, s))), s); }
@@ -223,6 +244,40 @@ void cpu_report(FILE *f)
 [[noreturn]] void cpu_div0(uint32_t at)
 {
 	cpu_fail("divide error at", at);
+}
+
+void cpu_div_overflow(uint32_t at)
+{
+	static std::set<uint32_t> seen;
+	if (wc_strict) cpu_fail("divide overflow (the quotient doesn't fit) at", at);
+	if (!seen.insert(at).second) return;
+	fprintf(stderr, "wc: divide overflow at %06x: the quotient truncated (x86 would fault)\n", at);
+	print_callers(stderr);
+}
+
+uint32_t mem_outside(uint32_t addr, int size, bool write)
+{
+	if (wc_strict) {
+		char what[96];
+		snprintf(what, sizeof what, "%s of %d bytes at %08x, outside memory, by instruction", write ? "write" : "read",
+			size, addr);
+		cpu_fail(what, wc_last_ins);
+	}
+	/* reported once for each instruction; the mixer's thread reads memory too */
+	static std::mutex lock;
+	static std::set<uint32_t> seen;
+	uint32_t at = wc_last_ins;
+	bool first;
+	{
+		std::lock_guard<std::mutex> g(lock);
+		first = seen.insert(at).second;
+	}
+	if (first) {
+		fprintf(stderr, "wc: %s of %d bytes at %08x, outside memory, by instruction %06x: wrapped (Windows would fault)\n",
+			write ? "write" : "read", size, addr, at);
+		print_callers(stderr);
+	}
+	return addr & (MEM_SIZE - 1);
 }
 
 /* WC_TRACE_AT=addr,lo-hi,...: trace only those instructions (hi exclusive), with the x87 registers */

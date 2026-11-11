@@ -11,7 +11,8 @@
  *  - Esc ends the movie (the game's halt flag, 4A24C4h, too); the next starts once it's released;
  *  - a scene without its first file plays with the original player.
  * The host shows the newest frame due (movie_frame), with the game's own picture over it where it
- * isn't colour 0 (the choice text). WC_HD_MOVIES=0: the original movies; WC_HD_MOVIES=dir: another
+ * isn't colour 0 (the choice text). The movie's time is its sound's (what the mixer has played);
+ * with virtual time (host.h) the program waits for the decoder, so that a run repeats exactly. WC_HD_MOVIES=0: the original movies; WC_HD_MOVIES=dir: another
  * folder (in the game folder) than Master_FMVs_Upscaled, e.g. Master_FMVs_Source. */
 #include <algorithm>
 #include <atomic>
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -35,6 +37,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "host.h"
 #include "sound.h"
 #include "win.h"
 
@@ -95,9 +98,10 @@ std::filesystem::path branch_file(const std::filesystem::path &dir, const std::s
 
 /* ---- the decoder: a thread reading the file, frames (RGB) and sound (to the mixer) ---- */
 
+using picture = std::shared_ptr<const std::vector<uint32_t>>; /* shared with the host: never copied */
 struct frame {
 	double pts = 0;
-	std::vector<uint32_t> pixels;
+	picture pixels;
 };
 
 class player {
@@ -115,7 +119,7 @@ public:
 		if (astream_ >= 0 && !open_codec(astream_, &adec_)) astream_ = -1;
 		w_ = vdec_->width, h_ = vdec_->height;
 		if (astream_ >= 0) sound_stream_add(&audio_);
-		started_ = std::chrono::steady_clock::now();
+		started_ = clock_us();
 		thread_ = std::thread([this] { decode(); });
 		return true;
 	}
@@ -134,33 +138,50 @@ public:
 		avformat_close_input(&fmt_);
 	}
 
-	/* the playing time: the sound's (what the mixer has played), else the clock's */
+	/* the playing time: the sound's (what the mixer has played), else the clock's. Past the sound's
+	 * end the clock's again, for a video track that is longer. */
 	double clock()
 	{
-		if (astream_ >= 0) {
-			std::lock_guard<std::mutex> g(sound_lock);
-			return (double)audio_.consumed / MIX_RATE;
+		uint64_t now = clock_us();
+		if (astream_ < 0) return (double)(now - started_) / 1e6;
+		bool eof;
+		{
+			std::lock_guard<std::mutex> g(lock_);
+			eof = eof_;
 		}
-		return std::chrono::duration<double>(std::chrono::steady_clock::now() - started_).count();
+		std::lock_guard<std::mutex> g(sound_lock);
+		double t = (double)audio_.consumed / MIX_RATE;
+		if (eof && audio_.samples.empty()) {
+			if (!sound_ended_) sound_ended_ = true, sound_end_ = now;
+			t += (double)(now - sound_end_) / 1e6;
+		}
+		return t;
 	}
 
 	/* The newest frame due, if there is a new one: into pixels (w x h) */
-	bool current(std::vector<uint32_t> *pixels, int *w, int *h)
+	bool current(picture *pixels, int *w, int *h)
 	{
 		double t = clock();
 		std::lock_guard<std::mutex> g(lock_);
 		bool got = false;
 		while (!frames_.empty() && frames_.front().pts <= t) {
-			shown_ = std::move(frames_.front());
+			*pixels = std::move(frames_.front().pixels);
 			frames_.pop_front();
 			got = true;
 		}
 		if (got) {
 			wake_.notify_all();
-			*pixels = shown_.pixels;
 			*w = w_, *h = h_;
 		}
 		return got;
+	}
+
+	/* Virtual time: waits (really) until the decoder is as far ahead as it goes, or at the file's
+	 * end, so that what plays at a time doesn't depend on how fast it decodes. */
+	void wait_ahead()
+	{
+		std::unique_lock<std::mutex> g(lock_);
+		ahead_.wait(g, [this] { return eof_ || !behind(); });
 	}
 
 	bool finished()
@@ -182,15 +203,22 @@ private:
 		return avcodec_open2(*ctx, codec, nullptr) >= 0;
 	}
 
-	/* waits while enough is decoded ahead: 8 frames, or a quarter of a second of sound */
+	/* whether more should be decoded ahead: under 8 frames, or a quarter of a second of sound
+	 * (lock_ held) */
+	bool behind()
+	{
+		if (frames_.size() < 8) return true;
+		std::lock_guard<std::mutex> s(sound_lock);
+		return astream_ >= 0 && audio_.samples.size() < 2 * MIX_RATE / 4;
+	}
+
+	/* waits while enough is decoded ahead (a packet every 20 ms all the same: a file whose sound
+	 * and frames are far apart must not stop it) */
 	void throttle()
 	{
 		std::unique_lock<std::mutex> g(lock_);
-		wake_.wait_for(g, std::chrono::milliseconds(20), [this] {
-			if (quit_ || frames_.size() < 8) return true;
-			std::lock_guard<std::mutex> s(sound_lock);
-			return astream_ >= 0 && audio_.samples.size() < 2 * MIX_RATE / 4;
-		});
+		ahead_.notify_all();
+		wake_.wait_for(g, std::chrono::milliseconds(20), [this] { return quit_ || behind(); });
 	}
 
 	int64_t start_pts(int stream)
@@ -206,10 +234,11 @@ private:
 		frame out;
 		int64_t ts = f->best_effort_timestamp == AV_NOPTS_VALUE ? 0 : f->best_effort_timestamp;
 		out.pts = (double)(ts - start_pts(vstream_)) * av_q2d(fmt_->streams[vstream_]->time_base);
-		out.pixels.resize((size_t)w_ * h_);
-		uint8_t *dst[1] = { (uint8_t *)out.pixels.data() };
+		auto pixels = std::make_shared<std::vector<uint32_t>>((size_t)w_ * h_);
+		uint8_t *dst[1] = { (uint8_t *)pixels->data() };
 		int pitch[1] = { 4 * w_ };
 		sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, pitch);
+		out.pixels = std::move(pixels);
 		std::lock_guard<std::mutex> g(lock_);
 		frames_.push_back(std::move(out));
 	}
@@ -271,6 +300,7 @@ private:
 		av_packet_free(&pkt);
 		std::lock_guard<std::mutex> g(lock_);
 		eof_ = true;
+		ahead_.notify_all();
 	}
 
 	std::filesystem::path file_;
@@ -280,12 +310,12 @@ private:
 	SwrContext *swr_ = nullptr;
 	int vstream_ = -1, astream_ = -1, w_ = 0, h_ = 0;
 	pcm_stream audio_;
-	std::chrono::steady_clock::time_point started_;
+	uint64_t started_ = 0, sound_end_ = 0; /* clock_us */
+	bool sound_ended_ = false;
 	std::thread thread_;
 	std::mutex lock_;
-	std::condition_variable wake_;
+	std::condition_variable wake_, ahead_;
 	std::deque<frame> frames_;
-	frame shown_;
 	std::atomic<bool> quit_{ false };
 	bool eof_ = false;
 };
@@ -294,7 +324,7 @@ private:
 std::mutex show_lock;
 player *playing;
 bool active; /* an HD movie scene is on (also between its branches) */
-std::vector<uint32_t> shown;
+picture shown;
 int shown_w, shown_h;
 uint64_t shown_count = 1;
 
@@ -352,7 +382,10 @@ bool play_branches(const std::filesystem::path &dir, const std::string &scene)
 			std::lock_guard<std::mutex> g(show_lock);
 			playing = p;
 		}
-		while (!p->finished() && !halted()) pump();
+		while (!p->finished() && !halted()) {
+			if (clock_virtual()) p->wait_ahead();
+			pump();
+		}
 		{
 			std::lock_guard<std::mutex> g(show_lock);
 			playing = nullptr;
@@ -407,7 +440,7 @@ bool play_movie(void)
 	{
 		std::lock_guard<std::mutex> g(show_lock);
 		active = false;
-		shown.clear();
+		shown.reset();
 	}
 	ddraw_clear();
 	if (!ok) {
@@ -426,13 +459,14 @@ struct init {
 } // namespace
 
 /* For the host: whether an HD movie is on, and its newest frame into pixels when count isn't the
- * frame's (count is set to it) */
-bool movie_frame(std::vector<uint32_t> *pixels, int *w, int *h, uint64_t *count)
+ * frame's (count is set to it). The host must keep asking, also when it shows nothing: the frames
+ * due are taken off the decoder's queue here, and a movie ends when that is empty. */
+bool movie_frame(std::shared_ptr<const std::vector<uint32_t>> *pixels, int *w, int *h, uint64_t *count)
 {
 	std::lock_guard<std::mutex> g(show_lock);
 	if (!active) return false;
 	if (playing && playing->current(&shown, &shown_w, &shown_h)) shown_count++;
-	if (!shown.empty() && *count != shown_count) {
+	if (shown && *count != shown_count) {
 		*pixels = shown;
 		*w = shown_w, *h = shown_h;
 		*count = shown_count;

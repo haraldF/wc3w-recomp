@@ -37,6 +37,8 @@ With the game at `../game3.30/Kilrathi_Saga` (or `-- --game path` for every step
 npm run imports      # map the modules, link them into one image and list the Windows functions they import
 npm run decompile    # import the image into a Ghidra project (out/ghidra) and analyze it (minutes)
 npm run recomp       # translate it to C++ (out/recomp) and build out/bin/wc3w
+npm run smoke        # run it headless from a new game to the first mission in space, in a fresh copy of the game folder
+npm test             # unit tests of the archive and PE readers and the CPU helpers (no game files needed)
 ```
 
 Then play, with a copy of the game folder (the game writes its saves into it):

@@ -38,7 +38,7 @@ API(WINMM, joyGetDevCapsA, 3)
 	}
 	if (id != 0) return JOYERR_PARMS;
 	if (!s.present) return JOYERR_UNPLUGGED;
-	memset(M + c, 0, size);
+	memset(guest_ptr(c, size), 0, size);
 	if (size < 112) return JOYERR_PARMS;
 	wr16(c, 1);
 	wr16(c + 2, 1);
@@ -161,7 +161,7 @@ void wave_out_poll(void)
 API(WINMM, waveOutGetDevCapsA, 3)
 {
 	uint32_t c = arg(1), size = std::min(arg(2), 52u);
-	memset(M + c, 0, size);
+	memset(guest_ptr(c, size), 0, size);
 	if (size >= 52) {
 		wr16(c, 1);
 		wr16(c + 2, 1);

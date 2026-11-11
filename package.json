@@ -5,17 +5,23 @@
   "license": "BSD-2-Clause",
   "description": "Statically recompile Wing Commander III's Windows version (WC3W.EXE, The Kilrathi Saga, 30th Anniversary Edition) to C++ with Ghidra",
   "type": "module",
+  "engines": {
+    "node": ">=24.2"
+  },
   "scripts": {
     "unpack": "node src/cli.ts unpack",
     "imports": "node src/cli.ts imports",
     "decompile": "node src/cli.ts decompile",
     "recomp": "node src/cli.ts recomp",
     "build": "node src/cli.ts build",
+    "smoke": "node src/cli.ts smoke",
     "discover": "node src/cli.ts discover",
     "play": "node src/cli.ts play",
     "print-save": "node src/print-save.ts",
     "print-mission": "node src/print-mission.ts",
     "tre": "node src/tre.ts",
+    "drift": "node src/cli.ts drift",
+    "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -43,6 +43,15 @@ std::u16string guest_wstr_n(uint32_t addr, int32_t n); /* UTF-16, likewise */
 static inline uint32_t rd32(uint32_t a) { return (uint32_t)mrd32(a, 4); }
 static inline void wr32(uint32_t a, uint32_t v) { mwr32(a, 4, v); }
 static inline void wr16(uint32_t a, uint16_t v) { mwr32(a, 2, v); }
+/* size bytes of the program's memory at addr, for the runtime to read or write directly (what a
+ * Windows function is given a pointer to). A block that isn't all in memory (a bad pointer) stops
+ * the program with the usual report; with size 0 any address will do. */
+[[gnu::cold]] [[noreturn]] void guest_ptr_fail(uint32_t addr, uint64_t size);
+static inline uint8_t *guest_ptr(uint32_t addr, uint64_t size)
+{
+	if (size && (addr < MEM_LO || addr >= MEM_SIZE || size > MEM_SIZE - addr)) guest_ptr_fail(addr, size);
+	return M + (addr < MEM_SIZE ? addr : 0);
+}
 /* Copies s with its NUL into at most size bytes at addr (truncated); returns the length copied
  * without the NUL. */
 uint32_t put_str(uint32_t addr, const std::string &s, uint32_t size);

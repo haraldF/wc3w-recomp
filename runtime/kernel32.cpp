@@ -1,15 +1,13 @@
 /* KERNEL32: what the C library's startup asks for (version, command line, environment, code pages,
  * standard handles), memory (VirtualAlloc, GlobalAlloc, LocalAlloc), files on drive C:, which is
- * the game folder (names case-insensitive, as on Windows), resources, time, and the
- * synchronisation calls (one thread so far: nothing to wait for). */
+ * the game folder (names case-insensitive, as on Windows), resources, time, and mutexes (threads
+ * and critical sections: thread.cpp). */
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <map>
 #include <system_error>
-#include <thread>
 #include <vector>
 
 #include "host.h"
@@ -90,7 +88,8 @@ static bool host_path(const std::string &name, fs::path *out)
 	return true;
 }
 
-/* A regular file at the program's path (fixes.cpp: the DATA folder's files) */
+/* A regular file at the program's path: for the DATA folder lookup the patch fixes (49AB03h, not
+ * ported yet) */
 bool win_file_exists(const std::string &name)
 {
 	fs::path p;
@@ -109,7 +108,7 @@ API(KERNEL32, FreeEnvironmentStringsW, 1) { return 1; }
 
 API(KERNEL32, GetStartupInfoA, 1)
 {
-	memset(M + arg(0), 0, 68);
+	memset(guest_ptr(arg(0), 68), 0, 68);
 	wr32(arg(0), 68);
 	return 0;
 }
@@ -159,9 +158,10 @@ API(KERNEL32, GetOEMCP, 0) { return 437; }
 
 API(KERNEL32, GetCPInfo, 2)
 {
-	memset(M + arg(1), 0, 20);
-	wr32(arg(1), 1); /* MaxCharSize: single bytes */
-	M[arg(1) + 4] = '?';
+	uint8_t *p = guest_ptr(arg(1), 20);
+	memset(p, 0, 20);
+	p[0] = 1; /* MaxCharSize: single bytes */
+	p[4] = '?';
 	return 1;
 }
 
@@ -209,7 +209,8 @@ API(KERNEL32, WideCharToMultiByte, 8)
 		set_last_error(122);
 		return 0;
 	}
-	for (size_t i = 0; i < s.size(); i++) M[out + i] = s[i] < 256 ? (uint8_t)s[i] : '?';
+	uint8_t *p = guest_ptr(out, s.size());
+	for (size_t i = 0; i < s.size(); i++) p[i] = s[i] < 256 ? (uint8_t)s[i] : '?';
 	return (uint32_t)s.size();
 }
 
@@ -261,7 +262,8 @@ API(KERNEL32, LCMapStringA, 6)
 	if (n < 0) s += '\0';
 	if (!arg(5)) return (uint32_t)s.size();
 	if (s.size() > arg(5)) return 0;
-	for (size_t i = 0; i < s.size(); i++) M[arg(4) + i] = (uint8_t)map_case((uint8_t)s[i], flags);
+	uint8_t *p = guest_ptr(arg(4), s.size());
+	for (size_t i = 0; i < s.size(); i++) p[i] = (uint8_t)map_case((uint8_t)s[i], flags);
 	return (uint32_t)s.size();
 }
 
@@ -392,7 +394,7 @@ API(KERNEL32, ReadFile, 5)
 		set_last_error(ERROR_INVALID_HANDLE);
 		return 0;
 	}
-	uint32_t n = (uint32_t)fread(M + arg(1), 1, std::min(arg(2), MEM_SIZE - arg(1)), o->f);
+	uint32_t n = (uint32_t)fread(guest_ptr(arg(1), arg(2)), 1, arg(2), o->f);
 	if (arg(3)) wr32(arg(3), n);
 	return 1;
 }
@@ -401,7 +403,7 @@ API(KERNEL32, WriteFile, 5)
 {
 	uint32_t h = arg(0), n = arg(2);
 	if (h == STD_OUT || h == STD_ERR) {
-		fwrite(M + arg(1), 1, n, stderr);
+		fwrite(guest_ptr(arg(1), n), 1, n, stderr);
 	}
 	else {
 		object *o = get(h);
@@ -409,7 +411,7 @@ API(KERNEL32, WriteFile, 5)
 			set_last_error(ERROR_INVALID_HANDLE);
 			return 0;
 		}
-		n = (uint32_t)fwrite(M + arg(1), 1, n, o->f);
+		n = (uint32_t)fwrite(guest_ptr(arg(1), n), 1, n, o->f);
 	}
 	if (arg(3)) wr32(arg(3), n);
 	return 1;
@@ -501,7 +503,7 @@ static bool wild_match(const char *pat, const char *name)
 static void put_find_data(uint32_t d, const fs::path &p)
 {
 	std::error_code ec;
-	memset(M + d, 0, 320);
+	memset(guest_ptr(d, 320), 0, 320);
 	bool dir = fs::is_directory(p, ec);
 	wr32(d, dir ? 0x10 : 0x80);
 	if (!dir) wr32(d + 32, (uint32_t)fs::file_size(p, ec));
@@ -551,7 +553,7 @@ API(KERNEL32, GetLogicalDriveStringsA, 2)
 {
 	static const char drives[] = "C:\\\0";
 	if (arg(0) < sizeof drives) return sizeof drives;
-	memcpy(M + arg(1), drives, sizeof drives);
+	memcpy(guest_ptr(arg(1), sizeof drives), drives, sizeof drives);
 	return sizeof drives - 1;
 }
 
@@ -577,7 +579,7 @@ API(KERNEL32, SetConsoleMode, 2) { return 0; }
 
 API(KERNEL32, WriteConsoleA, 5)
 {
-	fwrite(M + arg(1), 1, arg(2), stderr);
+	fwrite(guest_ptr(arg(1), arg(2)), 1, arg(2), stderr);
 	if (arg(3)) wr32(arg(3), arg(2));
 	return 1;
 }
@@ -651,8 +653,6 @@ API(KERNEL32, LockResource, 1) { return arg(0) ? rd32(arg(0)) : 0; }
 
 /* ---- time ---- */
 
-static const auto start = std::chrono::steady_clock::now();
-
 API(KERNEL32, QueryPerformanceFrequency, 1)
 {
 	mwr32(arg(0), 8, 1000000);
@@ -661,7 +661,7 @@ API(KERNEL32, QueryPerformanceFrequency, 1)
 
 API(KERNEL32, QueryPerformanceCounter, 1)
 {
-	mwr32(arg(0), 8, (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+	mwr32(arg(0), 8, clock_us());
 	return 1;
 }
 

@@ -1,8 +1,23 @@
-/* The host platform around the program: the window (later: DirectDraw's picture), keyboard, mouse
+/* The host platform around the program: the window (DirectDraw's picture), keyboard, mouse
  * and sound (host_sdl.cpp). The program runs on a thread of its own while the host owns the main
  * thread, which macOS needs for windows. The emulation never includes SDL. */
 #pragma once
 #include <cstdint>
+
+/* The clock everything runs by (clock.cpp), in microseconds since the start: the program's timers,
+ * its threads' sleeps, the vertical blank, the movies, WC_KEYS and WC_SCREENSHOT_AT. Normally the
+ * host's, in real time. WC_VIRTUAL_TIME=1 (headless only) makes it virtual, for runs that repeat
+ * exactly and wait for nothing: it advances with the instructions executed (WC_VIRTUAL_MIPS million
+ * a second, default 200) and every wait (Sleep, the vertical blank, an empty message queue) moves
+ * it on at once. The host's own work (the script, the mixer, the screenshot) then happens on the
+ * program's thread as the clock moves (host_tick), not on threads of its own. */
+uint64_t clock_us(void);
+bool clock_virtual(void);
+void clock_set_virtual(unsigned mips); /* before the program starts; 0: the default rate */
+/* On the program's thread: wait until then, or move the virtual clock there. */
+void clock_wait_until(uint64_t us);
+/* Virtual time: the clock moved (also called every 65536 instructions). */
+void host_tick(void);
 
 /* The folder the program's files (image.bin) are in: the executable's, with a separator at the end. */
 const char *host_base_dir(void);

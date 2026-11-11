@@ -20,6 +20,7 @@ enum {
 };
 
 #define MEM_SIZE 0x8000000u /* 128 MB */
+#define MEM_LO 0x10000u     /* below: never mapped, as on Windows (null pointers) */
 #define R_SIZE 0x1400u /* up to the x87 registers (10A0h-1180h) and 1280h-128Fh */
 extern uint8_t R[R_SIZE];
 extern uint8_t M[MEM_SIZE + 16];
@@ -56,6 +57,8 @@ extern const uint32_t wc_code_count;
 extern const uint32_t wc_code_addr[];
 extern void (*const wc_code_func[])(uint32_t);
 extern const uint32_t wc_image_lo, wc_image_hi;
+/* The instructions that call wc_hook (hooks.txt), with a 0 at the end */
+extern const uint32_t wc_hook_addr[];
 
 /* Code address (of the generated code) for an address the program jumps to: the same, in a flat
  * address space. */
@@ -65,6 +68,7 @@ static inline uint64_t rd(uint32_t off, int size) { uint64_t v = 0; memcpy(&v, R
 static inline void wr(uint32_t off, int size, uint64_t v) { memcpy(R + off, &v, size); }
 
 extern uint32_t wc_watch; /* WC_WATCH: report writes to this address (0 = off) */
+extern int wc_strict;     /* WC_STRICT: stop where Windows would fault (memory, division) */
 extern uint32_t wc_last_ins;
 void watch_hit(uint32_t addr, int size, uint64_t value);
 
@@ -76,15 +80,24 @@ extern uint32_t wc_sb[6];
 void seg_load(int reg, uint64_t selector);
 uint64_t seg_limit(uint64_t selector); /* LSL: the limit's low word, bit 16 set if the selector is valid */
 uint64_t seg_limit32(uint64_t selector); /* LSL: the whole limit, bit 32 set if the selector is valid */
+/* An access outside MEM_LO..MEM_SIZE (Windows would fault): the address wrapped into memory, or with
+ * WC_STRICT the program stops there. */
+[[gnu::cold]] uint32_t mem_outside(uint32_t addr, int size, bool write);
+static inline uint32_t mem_addr(uint64_t addr, int size, bool write)
+{
+	uint32_t a = (uint32_t)addr;
+	if (a - MEM_LO >= MEM_SIZE - MEM_LO) [[unlikely]] a = mem_outside(a, size, write);
+	return a;
+}
 static inline uint64_t mrd32(uint64_t addr, int size)
 {
 	uint64_t v = 0;
-	memcpy(&v, M + ((uint32_t)addr & (MEM_SIZE - 1)), size);
+	memcpy(&v, M + mem_addr(addr, size, false), size);
 	return v;
 }
 static inline void mwr32(uint64_t addr, int size, uint64_t v)
 {
-	uint32_t a = (uint32_t)addr & (MEM_SIZE - 1);
+	uint32_t a = mem_addr(addr, size, true);
 	memcpy(M + a, &v, size);
 	if (wc_watch && wc_watch - a < (uint32_t)size) {
 		watch_hit(a, size, v);
@@ -117,7 +130,7 @@ static inline uint64_t x87_fbits(double d, int size)
 }
 static inline uint64_t x87_fcvt(uint64_t a, int from, int to) { return x87_fbits(x87_fval(a, from), to); }
 uint64_t x87_fint(uint64_t a, int from, int to);
-uint64_t x87_ftrunc(uint64_t a, int size);
+uint64_t x87_ftrunc(uint64_t a, int size, int to); /* to an integer of to bytes; too large: the indefinite */
 static inline uint64_t x87_fadd(uint64_t a, uint64_t b, int s) { return x87_fbits(x87_fval(a, s) + x87_fval(b, s), s); }
 static inline uint64_t x87_fsub(uint64_t a, uint64_t b, int s) { return x87_fbits(x87_fval(a, s) - x87_fval(b, s), s); }
 static inline uint64_t x87_fmul(uint64_t a, uint64_t b, int s) { return x87_fbits(x87_fval(a, s) * x87_fval(b, s), s); }
@@ -155,18 +168,33 @@ static inline uint64_t sborrow(uint64_t a, uint64_t b, int size)
 void cpu_report(FILE *f); /* instructions executed, registers, callers */
 [[noreturn]] void cpu_fail(const char *what, uint32_t at);
 void set_flags_word(uint16_t flags); /* the 16-bit FLAGS value into CF, PF, ..., OF */
+/* DIV and IDIV: size is the dividend's (EDX:EAX: 8), the quotient must fit in half of it. When it
+ * doesn't, x86 faults (#DE: the game's "imul/idiv overflowing" crashes, which the enhancement patch
+ * works around); here the quotient is truncated, reported once for each instruction, or with
+ * WC_STRICT the program stops. */
 [[noreturn]] void cpu_div0(uint32_t at);
-static inline uint64_t udiv(uint64_t a, uint64_t b, uint32_t at) { if (!b) cpu_div0(at); return a / b; }
+[[gnu::cold]] void cpu_div_overflow(uint32_t at);
+static inline uint64_t udiv(uint64_t a, uint64_t b, int size, uint32_t at)
+{
+	if (!b) cpu_div0(at);
+	uint64_t q = a / b;
+	if (size >= 2 && shr(q, 4 * (uint64_t)size)) cpu_div_overflow(at);
+	return q;
+}
 static inline uint64_t urem(uint64_t a, uint64_t b, uint32_t at) { if (!b) cpu_div0(at); return a % b; }
 static inline uint64_t sdiv(uint64_t a, uint64_t b, int size, uint32_t at)
 {
 	if (!b) cpu_div0(at);
-	return (uint64_t)(sx(a, size) / sx(b, size));
+	int64_t x = sx(a, size), y = sx(b, size);
+	uint64_t q = y == -1 ? 0 - (uint64_t)x : (uint64_t)(x / y); /* INT64_MIN / -1 wraps */
+	if (size >= 2 && sx(q, size / 2) != (int64_t)q) cpu_div_overflow(at);
+	return q;
 }
 static inline uint64_t srem(uint64_t a, uint64_t b, int size, uint32_t at)
 {
 	if (!b) cpu_div0(at);
-	return (uint64_t)(sx(a, size) % sx(b, size));
+	int64_t y = sx(b, size);
+	return y == -1 ? 0 : (uint64_t)(sx(a, size) % y);
 }
 
 /* Enter the recompiled code: run() at an address computed by the program (an indirect call, which

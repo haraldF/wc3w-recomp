@@ -73,6 +73,22 @@ bool wc_hook(uint32_t at)
 	return it != hooks().end() && it->second();
 }
 
+/* hooks.txt and the handlers must agree: a handler the generated code never calls would be a fix
+ * that silently isn't there. */
+static void check_hooks(void)
+{
+	std::map<uint32_t, bool> generated;
+	for (const uint32_t *a = wc_hook_addr; *a; a++) generated[*a] = true;
+	for (const auto &[at, fn] : hooks()) {
+		if (generated.count(at)) continue;
+		fprintf(stderr, "wc: the hook at %06x isn't in hooks.txt, so the generated code never calls it: add it and npm run recomp\n", at);
+		exit(1);
+	}
+	for (const auto &[at, yes] : generated) {
+		if (!hooks().count(at)) fprintf(stderr, "wc: hooks.txt has %06x, which no handler is registered for (hook_register)\n", at);
+	}
+}
+
 /* ---- thunks ---- */
 
 struct thunk {
@@ -117,23 +133,25 @@ void win_thunk(uint32_t addr)
 	if (addr < THUNK_BASE || (addr - THUNK_BASE) % THUNK_SIZE || i >= thunks.size()) {
 		cpu_fail("call of an unknown thunk", addr);
 	}
-	const thunk t = thunks[i]; /* a copy: the function may add thunks (COM interfaces) */
+	/* copies: the function may add thunks (COM interfaces), which moves them */
+	const win_fn fn = thunks[i].fn;
+	const int nargs = thunks[i].nargs;
 	uint32_t esp = (uint32_t)rd(R_SP, 4);
-	if (!t.fn) {
+	if (!fn) {
 		fflush(stdout);
-		fprintf(stderr, "wc: unimplemented Windows function %s, called from %06x\n", t.name.c_str(), rd32(esp));
+		fprintf(stderr, "wc: unimplemented Windows function %s, called from %06x\n", thunks[i].name.c_str(), rd32(esp));
 		cpu_report(stderr);
 		host_exit(6);
 	}
 	if (wc_trace) {
-		fprintf(stderr, "wc: %s(", t.name.c_str());
-		for (int k = 0; k < t.nargs; k++) fprintf(stderr, "%s%x", k ? ", " : "", rd32(esp + 4 + 4 * k));
+		fprintf(stderr, "wc: %s(", thunks[i].name.c_str());
+		for (int k = 0; k < nargs; k++) fprintf(stderr, "%s%x", k ? ", " : "", rd32(esp + 4 + 4 * k));
 		fprintf(stderr, ") from %06x", rd32(esp));
 	}
-	uint32_t eax = t.fn();
+	uint32_t eax = fn();
 	if (wc_trace) fprintf(stderr, " = %x\n", eax);
 	wr(R_AX, 4, eax);
-	wr(R_SP, 4, esp + 4 + 4 * (uint32_t)t.nargs);
+	wr(R_SP, 4, esp + 4 + 4 * (uint32_t)nargs);
 }
 
 uint32_t win_call(uint32_t addr, std::initializer_list<uint32_t> args)
@@ -183,12 +201,21 @@ std::u16string guest_wstr_n(uint32_t addr, int32_t n)
 	return s;
 }
 
+void guest_ptr_fail(uint32_t addr, uint64_t size)
+{
+	char what[112];
+	snprintf(what, sizeof what, "a Windows function given %llu bytes at %08x, outside memory, after instruction",
+		(unsigned long long)size, addr);
+	cpu_fail(what, wc_last_ins);
+}
+
 uint32_t put_str(uint32_t addr, const std::string &s, uint32_t size)
 {
 	if (!size) return 0;
 	uint32_t n = std::min((uint32_t)s.size(), size - 1);
-	memcpy(M + addr, s.data(), n);
-	M[addr + n] = 0;
+	uint8_t *p = guest_ptr(addr, n + 1);
+	memcpy(p, s.data(), n);
+	p[n] = 0;
 	return n;
 }
 
@@ -343,6 +370,7 @@ void wave_out_poll(void); /* winmm.cpp */
 
 void win_poll(void)
 {
+	if (clock_virtual()) host_tick();
 	wave_out_poll();
 	thread_yield();
 }
@@ -364,6 +392,7 @@ static uint32_t put_string(const std::string &s, bool wide)
 void win_start(const char *game_dir, int argc, char **argv)
 {
 	win_game_dir = game_dir;
+	check_hooks();
 	init_thunks();
 
 	/* the image */

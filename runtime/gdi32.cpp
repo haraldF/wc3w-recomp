@@ -23,7 +23,7 @@ API(GDI32, CreatePalette, 1)
 {
 	uint32_t lp = arg(0), n = (uint32_t)mrd32(lp + 2, 2);
 	uint32_t h = heap_alloc(4 + 4 * n);
-	memcpy(M + h, M + lp, 4 + 4 * n);
+	memcpy(guest_ptr(h, 4 + 4 * n), guest_ptr(lp, 4 + 4 * n), 4 + 4 * n);
 	return h;
 }
 

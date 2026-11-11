@@ -4,10 +4,14 @@
  *   WC_TRACE=1      trace the Windows functions the program calls; 2 also every instruction
  *   WC_POKE=addr:byte,...  patch memory before starting (hex addresses), for experiments
  *   WC_WATCH=addr   report every write to that address (hex), with the callers
- *   WC_DUMP=file    save the memory when the program stops on an error */
+ *   WC_DUMP=file    save the memory when the program stops on an error
+ *   WC_STRICT=1     stop where Windows would fault: memory outside 10000h..MEM_SIZE (null pointers),
+ *                   a quotient too large for DIV/IDIV (otherwise wrapped and truncated, both reported)
+ * The host's (host_sdl.cpp): WC_HEADLESS, WC_KEYS, WC_SCREENSHOT, WC_VIRTUAL_TIME, WC_WAV... */
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "host.h"
 #include "win.h"
@@ -32,6 +36,8 @@ int main(int argc, char **argv)
 	wc_trace = trace ? atoi(trace) : 0;
 	const char *watch = getenv("WC_WATCH");
 	wc_watch = watch ? (uint32_t)strtoul(watch, NULL, 16) : 0;
+	const char *strict = getenv("WC_STRICT");
+	wc_strict = strict && *strict && strcmp(strict, "0");
 
 	win_start(argc > 1 ? argv[1] : ".", argc > 2 ? argc - 2 : 0, argv + 2);
 

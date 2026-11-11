@@ -85,7 +85,7 @@ uint32_t DS_GetSpeakerConfig()
 uint32_t DS_GetCaps()
 {
 	uint32_t c = arg(1), size = std::min(rd32(c), 96u);
-	memset(M + c, 0, size);
+	memset(guest_ptr(c, size), 0, size);
 	wr32(c, size);
 	wr32(c + 4, 0x1f | 0x400 | 0x800 | 0x1000 | 0x2000); /* primary and secondary, mono and stereo, 8 and 16 bits, any rate */
 	wr32(c + 8, 4000);    /* dwMinSecondarySampleRate */
@@ -116,6 +116,10 @@ uint32_t DS_CreateSoundBuffer()
 		}
 		b->v.size = bytes;
 		b->v.data = heap_alloc(bytes);
+		if (!b->v.data) {
+			delete b;
+			return 0x8007000e; /* DSERR_OUTOFMEMORY */
+		}
 		/* silence */
 		memset(M + b->v.data, b->v.bits == 8 ? 0x80 : 0, bytes);
 		sound_add(&b->v);

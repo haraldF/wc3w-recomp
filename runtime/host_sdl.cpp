@@ -15,12 +15,16 @@
  * buttons, the d-pad the hat. WC_JOYSTICK=1: a virtual stick when there is none (for WC_KEYS:
  * "%x.y" moves it, -100..100, "j1".."j4" press its buttons).
  * WC_HEADLESS=1: no window. WC_SCREENSHOT=file.png: the picture after WC_SCREENSHOT_AT seconds
- * (default 10), then the program ends (also headless); with WC_DUMP=file the memory too. */
+ * (default 10), then the program ends (also headless); with WC_DUMP=file the memory too.
+ * WC_VIRTUAL_TIME=1 (headless only): the virtual clock (host.h), WC_VIRTUAL_MIPS its rate; WC_KEYS
+ * and the screenshot then happen at exact points of the program's run (host_tick), real joysticks
+ * are ignored. */
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,8 +38,10 @@ void win_input(uint32_t message, uint32_t wparam, uint32_t lparam); /* user32.cp
 void win_mouse(int dx, int dy, int buttons);                       /* user32.cpp */
 void win_mouse_at(int x, int y);                                   /* user32.cpp */
 void wc_dump_memory(const char *why);                              /* cpu.cpp: WC_DUMP */
+extern uint64_t wc_icount;                                         /* cpu.cpp: instructions executed */
 void sound_mix(int16_t *out, unsigned frames);                     /* sound.cpp */
-bool movie_frame(std::vector<uint32_t> *pixels, int *w, int *h, uint64_t *count); /* movie.cpp */
+bool movie_frame(std::shared_ptr<const std::vector<uint32_t>> *pixels, int *w, int *h, uint64_t *count); /* movie.cpp */
+uint32_t ddraw_mode_bits(void);                                    /* ddraw.cpp */
 static const unsigned MIX_RATE = 44100;
 
 static SDL_Window *window;
@@ -43,7 +49,7 @@ static SDL_Renderer *renderer;
 static SDL_Texture *picture;
 static SDL_Texture *overlay;  /* the picture over an HD movie: colour 0 transparent */
 static SDL_Texture *movie;    /* the HD movie's frame */
-static std::vector<uint32_t> movie_pixels;
+static std::shared_ptr<const std::vector<uint32_t>> movie_pixels;
 static int movie_w, movie_h;
 static uint64_t movie_count;
 static void (*game_fn)(void);
@@ -164,11 +170,13 @@ static void open_sticks(void)
 	/* macOS's GameController framework claims HID joysticks such as flight sticks without reporting
 	 * them; without it, IOKit and HIDAPI see them all (SDL_JOYSTICK_MFI=1 overrides this) */
 	SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "0");
-	if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) return;
-	int n = 0;
-	SDL_JoystickID *ids = SDL_GetJoysticks(&n);
-	for (int i = 0; i < n; i++) open_stick(ids[i]);
-	SDL_free(ids);
+	if (!clock_virtual()) { /* a real stick would make a run with virtual time differ from the last */
+		if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) return;
+		int n = 0;
+		SDL_JoystickID *ids = SDL_GetJoysticks(&n);
+		for (int i = 0; i < n; i++) open_stick(ids[i]);
+		SDL_free(ids);
+	}
 	const char *v = getenv("WC_JOYSTICK");
 	virtual_stick = !stick && !pad && v && *v == '1';
 	if (virtual_stick) {
@@ -387,7 +395,7 @@ static void show_frame(void)
 	uint64_t n = ddraw_frame(pixels, palette, &frame_w, &frame_h);
 	uint64_t before = movie_count;
 	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count);
-	if (hd && movie_count != before && !movie_pixels.empty()) {
+	if (hd && movie_count != before && movie_pixels) {
 		float tw = 0, th = 0;
 		if (movie) SDL_GetTextureSize(movie, &tw, &th);
 		if (!movie || (int)tw != movie_w || (int)th != movie_h) {
@@ -395,7 +403,7 @@ static void show_frame(void)
 			movie = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_XRGB8888, SDL_TEXTUREACCESS_STREAMING, movie_w, movie_h);
 			SDL_SetTextureScaleMode(movie, SDL_SCALEMODE_LINEAR);
 		}
-		SDL_UpdateTexture(movie, NULL, movie_pixels.data(), 4 * movie_w);
+		SDL_UpdateTexture(movie, NULL, movie_pixels->data(), 4 * movie_w);
 	}
 	if (n != shown || hd) {
 		shown = n;
@@ -406,7 +414,7 @@ static void show_frame(void)
 	SDL_FRect src = { 0, 0, (float)frame_w, (float)frame_h };
 	SDL_FRect r = fit(640, 480);
 	if (hd) {
-		if (movie && !movie_pixels.empty()) {
+		if (movie && movie_pixels) {
 			SDL_FRect m = fit(movie_w, movie_h);
 			SDL_RenderTexture(renderer, movie, NULL, &m);
 		}
@@ -449,7 +457,7 @@ static void chunk(FILE *f, const char *type, const std::vector<uint8_t> &data)
 static void screenshot(const char *path)
 {
 	ddraw_frame(pixels, palette, &frame_w, &frame_h);
-	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count) && !movie_pixels.empty();
+	bool hd = movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count) && movie_pixels;
 	FILE *f = fopen(path, "wb");
 	if (!f) return;
 	fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
@@ -469,7 +477,7 @@ static void screenshot(const char *path)
 			continue;
 		}
 		for (int x = 0; x < w; x++) {
-			uint32_t p = movie_pixels[(size_t)y * w + x];
+			uint32_t p = (*movie_pixels)[(size_t)y * w + x];
 			raw.insert(raw.end(), { (uint8_t)(p >> 16), (uint8_t)(p >> 8), (uint8_t)p });
 		}
 	}
@@ -487,7 +495,9 @@ static void screenshot(const char *path)
 	chunk(f, "IDAT", z);
 	chunk(f, "IEND", {});
 	fclose(f);
-	fprintf(stderr, "wc: screenshot saved to %s\n", path);
+	/* what smoke tests check: the display mode's depth and how far the program got */
+	fprintf(stderr, "wc: screenshot saved to %s (%dx%d%s, %u-bit mode, %llu instructions)\n", path, w, hh,
+		hd ? ", an HD movie" : "", ddraw_mode_bits(), (unsigned long long)wc_icount);
 }
 
 /* ---- sound: the mixer's output to SDL's audio stream (headless: consumed in real time), and
@@ -629,35 +639,72 @@ static bool open_window(void)
 	return true;
 }
 
+static const char *shot;  /* WC_SCREENSHOT */
+static uint64_t shot_us;  /* when (clock_us) */
+static int buttons;       /* the mouse's */
+
+/* WC_KEYS up to now, and the screenshot when it's time (the program ends there) */
+static void script_and_shot(void)
+{
+	uint64_t now = clock_us();
+	play_script((int)(now / 1000), &buttons);
+	if (shot && now >= shot_us) {
+		screenshot(shot);
+		wc_dump_memory("screenshot");
+		host_exit(0);
+	}
+}
+
+/* Virtual time: on the program's thread, whenever its clock moved (at most every millisecond of
+ * it): the script, the joystick, the sound due, the movie's frames due, the screenshot. */
+void host_tick(void)
+{
+	static uint64_t last = ~0ull, mixed;
+	static std::vector<int16_t> buf;
+	uint64_t now = clock_us();
+	if (last != ~0ull && now < last + 1000) return;
+	last = now;
+	publish_stick();
+	for (uint64_t due = now * MIX_RATE / 1000000; mixed < due;) {
+		unsigned frames = (unsigned)std::min<uint64_t>(due - mixed, MIX_RATE);
+		buf.resize(2 * (size_t)frames);
+		produce(buf.data(), frames);
+		mixed += frames;
+	}
+	movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count);
+	script_and_shot();
+}
+
 [[noreturn]] void host_run(void (*game)(void))
 {
 	game_fn = game;
 	init_keys();
 	read_script();
 	bool shown = open_window();
+	if (const char *v = getenv("WC_VIRTUAL_TIME"); v && *v && *v != '0') {
+		const char *mips = getenv("WC_VIRTUAL_MIPS");
+		if (shown) fprintf(stderr, "wc: WC_VIRTUAL_TIME is for headless runs (WC_HEADLESS=1): ignored\n");
+		else clock_set_virtual(mips ? (unsigned)atoi(mips) : 0);
+	}
 	if (const char *w = getenv("WC_WAV")) {
 		wav = fopen(w, "wb");
 		if (wav) wav_header();
 	}
-	if (!shown || !open_audio()) quiet_audio();
+	if (!clock_virtual() && (!shown || !open_audio())) quiet_audio();
 	open_sticks();
 	publish_stick();
-	start_thread(game_thread, nullptr, "game");
-	auto started = std::chrono::steady_clock::now();
-	const char *shot = getenv("WC_SCREENSHOT");
+	shot = getenv("WC_SCREENSHOT");
 	const char *at = getenv("WC_SCREENSHOT_AT");
-	auto shot_time = std::chrono::steady_clock::now() + std::chrono::milliseconds((int)(1000 * (at ? atof(at) : 10)));
-	int buttons = 0;
+	shot_us = (uint64_t)(1e6 * (at ? atof(at) : 10));
+	start_thread(game_thread, nullptr, "game");
+	/* virtual time: all of it happens on the program's thread (host_tick) */
+	while (clock_virtual()) std::this_thread::sleep_for(std::chrono::hours(1));
 	for (;;) {
-		if (shot && std::chrono::steady_clock::now() >= shot_time) {
-			screenshot(shot);
-			wc_dump_memory("screenshot");
-			host_exit(0);
-		}
-		play_script((int)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), &buttons);
+		script_and_shot();
 		if (!shown) {
 			SDL_UpdateJoysticks();
 			publish_stick();
+			movie_frame(&movie_pixels, &movie_w, &movie_h, &movie_count); /* takes the frames due off its queue */
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			continue;
 		}

@@ -5,7 +5,6 @@
  * holds, an empty message queue) and every 65536 instructions otherwise (cpu_poll), so that a
  * thread spinning on a flag lets the others run. */
 #include <algorithm>
-#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <mutex>
@@ -17,8 +16,6 @@
 
 namespace {
 
-using clock = std::chrono::steady_clock;
-
 struct wthread {
 	uint32_t handle, id, tib, start, param;
 	uint8_t regs[sizeof R];
@@ -27,7 +24,7 @@ struct wthread {
 	uint32_t sb[6];
 	uint32_t last_ins = 0;
 	bool dead = false;    /* terminated, or returned */
-	clock::time_point wake{}; /* sleeping until then */
+	uint64_t wake = 0;    /* sleeping until then (clock_us) */
 };
 
 std::vector<wthread *> threads;
@@ -68,13 +65,13 @@ void switch_to(size_t i)
 	restore(me);
 }
 
-bool runnable(const wthread *t, clock::time_point now) { return !t->dead && t->wake <= now; }
+bool runnable(const wthread *t, uint64_t now) { return !t->dead && t->wake <= now; }
 
 /* Lets another runnable thread run; sleeping (until this thread's wake time): until then */
 void schedule(bool sleeping)
 {
 	for (;;) {
-		auto now = clock::now();
+		uint64_t now = clock_us();
 		for (size_t k = 1; k < threads.size(); k++) {
 			size_t i = (current + k) % threads.size();
 			if (runnable(threads[i], now)) {
@@ -85,11 +82,11 @@ void schedule(bool sleeping)
 		wthread *me = threads[current];
 		if (!sleeping || me->wake <= now) return;
 		/* nobody can run: sleep until the first one wakes */
-		auto first = me->wake;
+		uint64_t first = me->wake;
 		for (const wthread *t : threads) {
 			if (!t->dead && t->wake > now) first = std::min(first, t->wake);
 		}
-		std::this_thread::sleep_until(first);
+		clock_wait_until(first);
 	}
 }
 
@@ -114,8 +111,7 @@ void thread_main(void *p)
 	save(me);
 	/* hand over to the next thread that can run, sleeping until one can */
 	for (;;) {
-		auto now = clock::now();
-		auto first = clock::time_point::max();
+		uint64_t now = clock_us(), first = UINT64_MAX;
 		for (size_t i = 0; i < threads.size(); i++) {
 			if (runnable(threads[i], now)) {
 				std::lock_guard<std::mutex> g(lock);
@@ -125,8 +121,8 @@ void thread_main(void *p)
 			}
 			if (!threads[i]->dead) first = std::min(first, threads[i]->wake);
 		}
-		if (first == clock::time_point::max()) host_exit(0);
-		std::this_thread::sleep_until(first);
+		if (first == UINT64_MAX) host_exit(0);
+		clock_wait_until(first);
 	}
 }
 
@@ -176,13 +172,8 @@ void thread_yield(void)
 
 void thread_sleep(uint32_t ms)
 {
-	threads[current]->wake = clock::now() + std::chrono::milliseconds(ms);
+	threads[current]->wake = clock_us() + 1000ull * ms;
 	schedule(true);
-}
-
-void thread_poll(void)
-{
-	if (threads.size() > 1) schedule(false);
 }
 
 API(KERNEL32, CreateThread, 6)
@@ -240,7 +231,7 @@ API(KERNEL32, TerminateThread, 2)
  * another thread holds lets the others run until it's free. */
 API(KERNEL32, InitializeCriticalSection, 1)
 {
-	memset(M + arg(0), 0, 24);
+	memset(guest_ptr(arg(0), 24), 0, 24);
 	wr32(arg(0) + 4, 0xffffffff); /* LockCount */
 	return 0;
 }
@@ -262,6 +253,9 @@ API(KERNEL32, EnterCriticalSection, 1)
 API(KERNEL32, LeaveCriticalSection, 1)
 {
 	uint32_t cs = arg(0);
-	if (rd32(cs + 8) && --*(uint32_t *)(M + cs + 8) == 0) wr32(cs + 12, 0);
+	if (uint32_t n = rd32(cs + 8)) {
+		wr32(cs + 8, n - 1);
+		if (n == 1) wr32(cs + 12, 0);
+	}
 	return 0;
 }

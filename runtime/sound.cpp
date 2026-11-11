@@ -70,8 +70,18 @@ static void mix_voice(voice &v, float *acc, unsigned frames)
 			}
 			return;
 		}
-		float l, r;
-		sample(v, data, (uint32_t)v.pos, &l, &r);
+		uint32_t i = (uint32_t)v.pos;
+		float l, r, frac = (float)(v.pos - i);
+		sample(v, data, i, &l, &r);
+		if (frac > 0) {
+			/* between two frames (another rate than the mixer's): interpolated; after the last one
+			 * comes a looping buffer's first */
+			uint32_t next = i + 1 < n ? i + 1 : v.looping && !v.wave_out ? 0 : i;
+			float l2, r2;
+			sample(v, data, next, &l2, &r2);
+			l += (l2 - l) * frac;
+			r += (r2 - r) * frac;
+		}
 		acc[2 * k] += l * v.left;
 		acc[2 * k + 1] += r * v.right;
 		v.pos += step;

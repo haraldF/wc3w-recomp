@@ -2,7 +2,6 @@
  * and mouse as messages, resources (strings, icons, cursors, accelerators), the cursor, message
  * boxes. */
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <map>
@@ -39,7 +38,6 @@ std::mutex input_lock;
 std::vector<input_event> input;
 int mouse_x = 320, mouse_y = 240, mouse_buttons;
 bool vk_down[256];
-const auto start = std::chrono::steady_clock::now();
 
 enum : uint32_t {
 	WM_CREATE = 0x01, WM_DESTROY = 0x02, WM_SIZE = 0x05, WM_ACTIVATE = 0x06, WM_SETFOCUS = 0x07,
@@ -54,7 +52,7 @@ std::string upper(std::string s)
 
 uint32_t ticks(void)
 {
-	return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+	return (uint32_t)(clock_us() / 1000);
 }
 
 /* A string or an atom (below 10000h) as a class name */
@@ -312,7 +310,7 @@ API(USER32, GetWindowPlacement, 2)
 {
 	auto it = windows.find(arg(0));
 	uint32_t p = arg(1);
-	memset(M + p, 0, 44);
+	memset(guest_ptr(p, 44), 0, 44);
 	wr32(p, 44);
 	wr32(p + 8, 1 /* SW_SHOWNORMAL */);
 	if (it != windows.end()) {
