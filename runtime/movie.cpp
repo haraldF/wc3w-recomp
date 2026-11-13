@@ -8,6 +8,10 @@
  *  - the game keeps the branches to play in a list (4AAA50h, -1 at the end) with the current
  *    index (4A24D4h); after them its own function (40FD20h) shows a conversation choice and fills
  *    the list again, until it starts with -1;
+ *  - subtitles from <dir>subtitles/<file's name>.en.srt (.de, .fr), drawn into the frames
+ *    (subtitle.cpp): WC3W.EXE has no option for them, GOG's patch keeps it in the game folder's
+ *    wc3w_en.ini and wc3w_en_ingame.ini (the second wins: [MAIN] ENABLE_SUBTITLES=1, LANGUAGE_REF=0
+ *    English, 1 German, 2 French; on in English without them); WC_SUBTITLES=0 off, or en, de, fr;
  *  - Esc ends the movie (the game's halt flag, 4A24C4h, too); the next starts once it's released;
  *  - a scene without its first file plays with the original player.
  * The host shows the newest frame due (movie_frame), with the game's own picture over it where it
@@ -39,6 +43,7 @@ extern "C" {
 
 #include "host.h"
 #include "sound.h"
+#include "subtitle.h"
 #include "win.h"
 
 /* ddraw.cpp: the primary surface and its back buffer to colour 0, so only what the game draws
@@ -56,7 +61,8 @@ const uint32_t TRANSLATE_MESSAGES = 0x482920, MESSAGE_NODE_ADD = 0x483090, MESSA
 
 /* ---- movies.ini ---- */
 
-std::map<std::string, std::map<std::string, std::string>> ini;
+using ini_file = std::map<std::string, std::map<std::string, std::string>>; /* sections in lower case */
+ini_file ini;
 
 std::string trim(std::string s)
 {
@@ -66,7 +72,7 @@ std::string trim(std::string s)
 	return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
 
-void read_ini(const std::filesystem::path &file)
+void read_ini(const std::filesystem::path &file, ini_file &ini)
 {
 	std::ifstream f(file);
 	std::string line, section;
@@ -82,6 +88,22 @@ void read_ini(const std::filesystem::path &file)
 	}
 }
 
+/* dir/name, matched case-insensitively as on Windows (the in-flight movies are BMIST_a.mp4); dir/name
+ * as it is when there's none */
+std::filesystem::path find_file(const std::filesystem::path &dir, const std::string &want)
+{
+	std::filesystem::path file = dir / want;
+	std::error_code ec;
+	if (std::filesystem::exists(file, ec)) return file;
+	for (const auto &e : std::filesystem::directory_iterator(dir, ec)) {
+		std::string have = e.path().filename().string();
+		if (have.size() == want.size() && std::equal(have.begin(), have.end(), want.begin(),
+			[](char x, char y) { return tolower((unsigned char)x) == tolower((unsigned char)y); }))
+			return e.path();
+	}
+	return file;
+}
+
 /* The file of a scene's branch; empty: the branch is skipped */
 std::filesystem::path branch_file(const std::filesystem::path &dir, const std::string &scene, int branch)
 {
@@ -93,7 +115,37 @@ std::filesystem::path branch_file(const std::filesystem::path &dir, const std::s
 		if (auto b = s->second.find(letter); b != s->second.end()) letter = b->second;
 	}
 	if (letter == "-1") return {};
-	return dir / (name + letter + ".mp4");
+	return find_file(dir, name + letter + ".mp4");
+}
+
+/* The subtitles' language (0 English, 1 German, 2 French), or -1: none. GOG's patch settings, read
+ * at each scene (the patch may change them in the game) */
+int subtitle_language(void)
+{
+	static const char *const names[] = { "en", "de", "fr" };
+	if (const char *e = getenv("WC_SUBTITLES"); e && *e) {
+		for (int i = 0; i < 3; i++)
+			if (!strcmp(e, names[i])) return i;
+		if (strcmp(e, "1")) return -1;
+	}
+	ini_file patch;
+	read_ini(find_file(win_game_dir, "wc3w_en.ini"), patch);
+	read_ini(find_file(win_game_dir, "wc3w_en_ingame.ini"), patch);
+	auto &main = patch["main"];
+	if (main.count("ENABLE_SUBTITLES") && atoi(main["ENABLE_SUBTITLES"].c_str()) == 0) return -1;
+	int language = main.count("LANGUAGE_REF") ? atoi(main["LANGUAGE_REF"].c_str()) : 0;
+	return language >= 0 && language < 3 ? language : 0;
+}
+
+/* The subtitles for a movie file, if they are on and there are some in their language */
+std::vector<subtitle_cue> subtitles_for(const std::filesystem::path &movie, int language)
+{
+	static const char *const suffix[] = { ".en.srt", ".de.srt", ".fr.srt" };
+	if (language < 0) return {};
+	std::filesystem::path file = find_file(movie.parent_path() / "subtitles", movie.stem().string() + suffix[language]);
+	std::vector<subtitle_cue> cues = srt_read(file);
+	if (wc_trace) fprintf(stderr, "wc: subtitles %s: %zu cues\n", file.string().c_str(), cues.size());
+	return cues;
 }
 
 /* ---- the decoder: a thread reading the file, frames (RGB) and sound (to the mixer) ---- */
@@ -106,7 +158,7 @@ struct frame {
 
 class player {
 public:
-	explicit player(const std::filesystem::path &file) : file_(file) {}
+	player(const std::filesystem::path &file, std::vector<subtitle_cue> cues) : file_(file), cues_(std::move(cues)) {}
 	~player() { stop(); }
 
 	bool start()
@@ -238,6 +290,7 @@ private:
 		uint8_t *dst[1] = { (uint8_t *)pixels->data() };
 		int pitch[1] = { 4 * w_ };
 		sws_scale(sws_, f->data, f->linesize, 0, f->height, dst, pitch);
+		if (const subtitle_cue *c = srt_at(cues_, out.pts)) subtitle_draw(pixels->data(), w_, h_, c->text);
 		out.pixels = std::move(pixels);
 		std::lock_guard<std::mutex> g(lock_);
 		frames_.push_back(std::move(out));
@@ -304,6 +357,7 @@ private:
 	}
 
 	std::filesystem::path file_;
+	std::vector<subtitle_cue> cues_;
 	AVFormatContext *fmt_ = nullptr;
 	AVCodecContext *vdec_ = nullptr, *adec_ = nullptr;
 	SwsContext *sws_ = nullptr;
@@ -365,13 +419,14 @@ void pump(void)
  * index is left at the last one played. */
 bool play_branches(const std::filesystem::path &dir, const std::string &scene)
 {
+	int language = subtitle_language();
 	for (uint32_t i = rd32(BRANCH_INDEX);; i++) {
 		int32_t branch = (int32_t)rd32(BRANCH_LIST + 4 * i);
 		if (branch < 0 || halted()) return true;
 		std::filesystem::path file = branch_file(dir, scene, branch);
 		wr32(BRANCH_INDEX, i);
 		if (file.empty()) continue;
-		player *p = new player(file);
+		player *p = new player(file, subtitles_for(file, language));
 		if (!p->start()) {
 			fprintf(stderr, "wc: HD movie %s: cannot play\n", file.string().c_str());
 			delete p;
@@ -404,7 +459,7 @@ bool play_movie(void)
 	static bool ini_read;
 	if (!ini_read) {
 		ini_read = true;
-		read_ini(dir / "movies.ini");
+		read_ini(dir / "movies.ini", ini);
 	}
 	int32_t first = (int32_t)rd32(BRANCH_LIST + 4 * rd32(BRANCH_INDEX));
 	std::filesystem::path file = first >= 0 ? branch_file(dir, scene, first) : std::filesystem::path();

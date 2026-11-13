@@ -162,9 +162,21 @@ under `out/` is generated and ignored.
   the sound's clock. The host draws it fitted to the window with the game's own picture over it
   (colour 0 transparent: the choice text). `WC_HD_MOVIES=0`: the original movies;
   `WC_HD_MOVIES=Master_FMVs_Source`: the other set. Not done yet: the in-flight comms (460 files in
-  `Master_FMVs_Upscaled/inflight`, the patch's other hooks at 422EA5h, 423085h, 433731h), subtitles,
+  `Master_FMVs_Upscaled/inflight`, the patch's other hooks at 422EA5h, 423085h, 433731h),
   the patch's colours for the choice text (palette entries 252/253 and its code patches at
   414940h-414983h): conversations are untested.
+- Subtitles (`subtitle.cpp`, `srt.cpp`, from wc4w-recomp): GOG's `.srt` files,
+  `Master_FMVs_Upscaled/subtitles/sc_001a.en.srt` (`.de`, `.fr`; 348 movies, `enda` without its
+  MP4, none for `inflight/`), drawn into each decoded frame with FreeType (white, black outline, a
+  twentieth of the frame's height, wrapped to 90% of its width; the system's Arial Bold,
+  `WC_SUBTITLE_FONT=file` another). Names matched case-insensitively. Most files are **code page
+  850** (0x94 o umlaut, 0xE1 sharp s; `file` says "Non-ISO extended-ASCII" or, for some, "ISO-8859"),
+  the rest ASCII. WC3W.EXE has no subtitle option or language (unlike WC4W.EXE): GOG's patch keeps
+  them in the game folder's `wc3w_en.ini` and `wc3w_en_ingame.ini` (`[MAIN] ENABLE_SUBTITLES=1`,
+  `LANGUAGE_REF=0` English, 1 German, 2 French; the second file wins, both read at each scene), on
+  in English without them; `WC_SUBTITLES=0` turns them off, `en`/`de`/`fr` picks the language.
+  The public patch source has no subtitle code (GOG's build is later). Checked headless in all
+  three languages: the opening's (`sc_001a`, after `origin_sa`) second line at 156 s of virtual time.
 - The joystick (`winmm.cpp`, the host's `publish_stick`): the game calls `joyGetDevCapsA` once at
   its start (into 4B2338h; wCaps at 4B2398h: HASZ, HASR, HASPOV decide whether it reads those), so
   the host opens a stick plugged in before the game thread starts (with `SDL_JOYSTICK_MFI=0`, as in
@@ -294,7 +306,8 @@ files, link the `.TRE` files.
 - `npm test`: `node --test` on `test/*.test.ts`, no game files needed: the archive reader (LZW,
   RefPack, both XTRE versions' hashes, archives made in memory), the PE reader, and the generated
   code's helpers (`test/rt_test.cpp` with `runtime/cpu.cpp`: DIV/IDIV, x87 rounding and conversions,
-  80-bit values, flags, memory, the shadow stack). The same files as wc4w-recomp's.
+  80-bit values, flags, memory, the shadow stack), the `.srt` reader (`test/srt_test.cpp` with
+  `runtime/srt.cpp`). The same files as wc4w-recomp's.
 - `npm run imports` and `build` list the imported Windows functions without an implementation:
   `RtlUnwind`, `RaiseException`, `UnhandledExceptionFilter`, `ReadConsoleInputA` (after an
   exception, which the runtime never raises) and `GDI32!StretchDIBits` (what the game draws with

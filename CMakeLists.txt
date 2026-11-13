@@ -20,6 +20,8 @@ find_package(SDL3 REQUIRED CONFIG)
 # The HD movies: FFmpeg's libraries (brew install ffmpeg)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswscale libswresample libavutil)
+# The HD movies' subtitles: FreeType (brew install freetype)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 
 # The recompiled program. The generated code has unused labels and variables by design; -O1 keeps
 # its huge functions quick to compile.
@@ -35,7 +37,7 @@ file(GLOB WC_RUNTIME CONFIGURE_DEPENDS runtime/*.cpp)
 add_executable(wc ${WC_RUNTIME} $<TARGET_OBJECTS:wc_generated>)
 target_include_directories(wc PRIVATE runtime "${WC_RECOMP_DIR}")
 target_compile_options(wc PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(wc PRIVATE SDL3::SDL3 PkgConfig::FFMPEG)
+target_link_libraries(wc PRIVATE SDL3::SDL3 PkgConfig::FFMPEG PkgConfig::FREETYPE)
 set_target_properties(wc PROPERTIES OUTPUT_NAME wc3w RUNTIME_OUTPUT_DIRECTORY "${WC_BIN_DIR}")
 
 # The program image the runtime loads, found next to the executable

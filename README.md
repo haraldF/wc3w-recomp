@@ -10,7 +10,7 @@ of its own, and the runtime will take its CPU core and SDL host. The two project
 build time: a change here never affects the DOS one.
 
 State: the game starts in a window, plays its intro as the 30th Anniversary Edition's HD movies
-(1080p, decoded with FFmpeg; the original 320x240 ones with `WC_HD_MOVIES=0`) and reaches the
+(1080p, decoded with FFmpeg, with GOG's subtitles; the original 320x240 ones with `WC_HD_MOVIES=0`) and reaches the
 hangar (with its music) with the keyboard and mouse. Further than that is untested; see `CLAUDE.md` for what's
 missing.
 
@@ -22,7 +22,7 @@ only the `Kilrathi_Saga` folder is needed, with `Master_FMVs_Upscaled` for the H
 `Master_FMVs_Source` is the other set, not needed):
 
 ```bash
-brew install node ghidra innoextract cmake ninja sdl3 ffmpeg
+brew install node ghidra innoextract cmake ninja sdl3 ffmpeg freetype
 innoextract --gog -d ../game3.30 path/to/setup_wing_commander_iii_heart_of_the_tigertm_30th_anniversary_edition_v1.0_\(95013\).exe
 npm ci
 ```
@@ -38,7 +38,7 @@ npm run imports      # map the modules, link them into one image and list the Wi
 npm run decompile    # import the image into a Ghidra project (out/ghidra) and analyze it (minutes)
 npm run recomp       # translate it to C++ (out/recomp) and build out/bin/wc3w
 npm run smoke        # run it headless from a new game to the first mission in space, in a fresh copy of the game folder
-npm test             # unit tests of the archive and PE readers and the CPU helpers (no game files needed)
+npm test             # unit tests of the archive, PE and .srt readers and the CPU helpers (no game files needed)
 ```
 
 Then play, with a copy of the game folder (the game writes its saves into it):
